@@ -1,0 +1,12 @@
+{
+  "bindAddress": "127.0.0.1",
+  "clientPort": 8470,
+  "receiverPort": 8471,
+  "httpsPort": 8443,
+  "receiverBrowser": "auto",
+  "allowedUsers": [],
+  "allowedCidrs": ["100.64.0.0/10", "fd7a:115c:a1e0::/48"],
+  "outputDeviceMatch": "Steam Streaming Microphone",
+  "outputDeviceExclude": "Steam Streaming Speakers",
+  "opus": { "maxaveragebitrate": 128000, "ptime": 10 }
+}

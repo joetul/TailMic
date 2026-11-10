@@ -1,0 +1,13 @@
+{
+  "name": "tailmic",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Send your laptop microphone to your gaming PC over Tailscale (WebRTC/Opus).",
+  "type": "module",
+  "main": "server.js",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test ../tests/unit"
+  }
+}

@@ -1,0 +1,6 @@
+# Windows scripts must keep Windows line endings (.cmd files can break without them),
+# also in the zip GitHub makes with "Download ZIP".
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+# Shell scripts must keep Unix line endings.
+*.sh text eol=lf

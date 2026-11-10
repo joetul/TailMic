@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TailMic (PC)</title>
+<link rel="icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="receiver.js"></script>
+</head>
+<body>
+<main>
+  <header>
+    <img src="icon.svg" alt="">
+    <div><h1>TailMic &ndash; PC receiver</h1><p class="sub">Keep this window open (minimized is fine).</p></div>
+  </header>
+
+  <section class="card">
+    <div class="status" id="status" data-s="idle"><span class="dot"></span><span id="statusText">Starting...</span></div>
+    <p class="msg" id="msg"></p>
+    <div class="meter" title="Incoming level"><div id="meter"></div></div>
+    <div class="row hidden" id="permRow"><button class="primary" id="perm">Allow access (one time)</button></div>
+  </section>
+
+  <section class="card">
+    <dl>
+      <dt>Output device</dt><dd id="device">-</dd>
+      <dt>Allowed user</dt><dd id="users">-</dd>
+      <dt>Connected user</dt><dd id="user">-</dd>
+      <dt>Route</dt><dd id="route">-</dd>
+      <dt>Round trip</dt><dd id="rtt">-</dd>
+      <dt>Buffer delay</dt><dd id="buf">-</dd>
+      <dt>Packets lost</dt><dd id="lost">-</dd>
+    </dl>
+  </section>
+  <audio id="audio" muted></audio>
+</main>
+</body>
+</html>

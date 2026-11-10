@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TailMic</title>
+<link rel="icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="client.js"></script>
+</head>
+<body>
+<main>
+  <header>
+    <img src="icon.svg" alt="">
+    <div><h1>TailMic</h1><p class="sub" id="who">Microphone to your gaming PC over Tailscale</p></div>
+  </header>
+
+  <section class="card">
+    <div class="status" id="status" data-s="idle"><span class="dot"></span><span id="statusText">Loading...</span></div>
+    <p class="msg" id="msg"></p>
+    <div class="meter" title="Microphone level"><div id="meter"></div></div>
+  </section>
+
+  <section class="card">
+    <label for="mic">Microphone</label>
+    <select id="mic"><option value="">System default</option></select>
+    <p class="msg" id="permMsg">Click Connect and allow microphone access to see all microphones.</p>
+    <label class="check"><input type="checkbox" id="ns" checked> Noise suppression <span class="hint">(filters fans, hum and room noise; turn off for the purest sound)</span></label>
+    <label class="check"><input type="checkbox" id="snd" checked> Sound alerts <span class="hint">(beeps for a few seconds if the connection drops, a short chime when it is back)</span></label>
+    <div class="row">
+      <button class="primary" id="connect" disabled>Connect</button>
+      <button id="mute" aria-pressed="false" disabled>Mute</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <dl>
+      <dt>PC</dt><dd id="pc">-</dd>
+      <dt>Route</dt><dd id="route">-</dd>
+      <dt>Round trip</dt><dd id="rtt">-</dd>
+      <dt>Sending</dt><dd id="rate">-</dd>
+      <dt>Codec</dt><dd id="codec">-</dd>
+      <dt>Processing</dt><dd id="proc">-</dd>
+    </dl>
+  </section>
+</main>
+</body>
+</html>
