@@ -9,7 +9,7 @@
 // Audio itself never passes through this server: it flows directly between the
 // two browsers (WebRTC, DTLS-SRTP). That includes "Test what the game hears",
 // where the PC window sends the sound of "Microphone (Steam Streaming Microphone)"
-// back to the laptop over the same connection; this server only passes on the
+// back to the client over the same connection; this server only passes on the
 // request to start or stop it. Each browser is only ever told the other's
 // Tailscale addresses: every other ICE candidate is removed here, and the PC's
 // side is pinned to the PC's exact Tailscale IPs (from `tailscale ip`).
@@ -302,7 +302,7 @@ export function createTailMic(cfg, { onQuit = () => {} } = {}) {
       state.session = session;
       log(`offer from ${user} session=${id.slice(0, 8)} candidates=${f.kept.join(',')} dropped=${f.dropped}`);
       let timer;
-      // The laptop may leave (tab closed, network gone) while the PC is answering:
+      // The client may leave (tab closed, network gone) while the PC is answering:
       // then cancel the call instead of leaving the PC waiting on a dead peer.
       let gone = false;
       const onClose = () => {
@@ -321,7 +321,7 @@ export function createTailMic(cfg, { onQuit = () => {} } = {}) {
       session.pending = null;
       if (gone || res.destroyed) {
         if (state.session === session) {
-          log(`laptop left during set-up, cancelling session=${id.slice(0, 8)}`);
+          log(`client left during set-up, cancelling session=${id.slice(0, 8)}`);
           sse('hangup', { id, reason: 'client' });
           state.session = null;
         }
@@ -441,7 +441,7 @@ export function createTailMic(cfg, { onQuit = () => {} } = {}) {
         outputDevice: st.deviceFound ? st.deviceLabel : null,
         call: state.session ? { user: state.session.user, state: st.state, since: new Date(state.session.since).toISOString() } : null,
         needsPermission: !!(state.receiver && st.needsPermission), // the PC window waits for someone to click "Allow"
-        test: !!(state.receiver && st.testing), // the laptop is listening to "Microphone (Steam Streaming Microphone)" right now
+        test: !!(state.receiver && st.testing), // the client is listening to "Microphone (Steam Streaming Microphone)" right now
         allowedUsers: cfg.allowedUsers,
         serveHost: cfg.serveHost || null,
         httpsPort: cfg.httpsPort,

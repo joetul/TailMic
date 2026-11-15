@@ -151,7 +151,7 @@ test('full signaling round trip filters candidates on both sides', async () => {
     assert.equal(offers[0].user, USER);
     assert.ok(!offers[0].sdp.includes('192.168.1.2'), 'LAN candidate must not reach the PC');
     assert.ok(res.json.sdp.includes('100.100.9.9'));
-    assert.ok(!res.json.sdp.includes('10.1.1.1'), 'LAN candidate must not reach the laptop');
+    assert.ok(!res.json.sdp.includes('10.1.1.1'), 'LAN candidate must not reach the client');
     const cfg = await c('/api/config');
     assert.equal(cfg.json.receiverOnline, true);
     assert.equal(cfg.json.activeSession, res.json.id);
@@ -218,7 +218,7 @@ test('client port only answers for the PC name or loopback (DNS rebinding)', asy
   } finally { b.close(); }
 });
 
-test('laptop leaving while the PC answers cancels the call', async () => {
+test('client leaving while the PC answers cancels the call', async () => {
   const { s, c, r, close } = await boot();
   const events = [];
   let sse;
@@ -407,7 +407,7 @@ test('test: start waits for the PC window, stop is passed on, and health shows i
     assert.equal(res.status, 200, JSON.stringify(res.json));
     assert.equal(res.json.device, 'Microphone (Steam Streaming Microphone)');
     assert.deepEqual(b.tests, [{ id: b.id, action: 'start' }]);
-    assert.equal((await b.r('/api/health')).json.test, true, 'status shows that the laptop is listening');
+    assert.equal((await b.r('/api/health')).json.test, true, 'status shows that the client is listening');
     assert.equal((await b.c('/api/test', { method: 'POST', body: { id: b.id, action: 'stop' } })).status, 200);
     await wait(50);
     assert.deepEqual(b.tests[1], { id: b.id, action: 'stop' });

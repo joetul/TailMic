@@ -113,6 +113,8 @@ const PC_WINDOW_SWITCHES = [...fs.readFileSync(path.join(ROOT, 'scripts/start.ps
 // permission request, and the page's real security policy.
 // steamMic: the PC has a "Microphone (Steam Streaming Microphone)" (see the probes).
 async function run(name, cfgOverrides, body, { beforeReceiver, realProfile, steamMic } = {}) {
+  // Run some of the tests only:  -e ONLY='messages keep up'  (part of a test's name)
+  if (process.env.ONLY && !name.includes(process.env.ONLY)) return;
   const cfg = { clientPort: 18470, receiverPort: 18471, allowedUsers: [USER], ...cfgOverrides };
   const srv = startServer(cfg);
   await sleep(500);
@@ -404,8 +406,8 @@ await run('review bug 1: closing the Mac tab while the PC answers cancels the ca
   await client.close(); // tab closed mid set-up
   await waitFor(receiver, () => window.tailmic.status === 'Ready', null, 6000);
   const log = srv.logs.join('');
-  console.log('  server noticed:', /laptop left during set-up/.test(log), '| PC status:', await receiver.evaluate(() => window.tailmic.status));
-  assert.match(log, /laptop left during set-up/);
+  console.log('  server noticed:', /client left during set-up/.test(log), '| PC status:', await receiver.evaluate(() => window.tailmic.status));
+  assert.match(log, /client left during set-up/);
   assert.equal(await receiver.evaluate(() => window.__openPcs()), 0, 'PC dropped the dead call');
 });
 
@@ -444,11 +446,91 @@ await run('two PC windows do not fight over the connection', { allowedCidrs: LAB
   await second.goto(`http://127.0.0.1:${cfg.receiverPort}/`);
   await waitFor(second, () => window.tailmic.status === 'Ready');
   await waitFor(receiver, () => window.tailmic.status === 'Open in another window');
-  await sleep(6000);
+  await sleep(11500); // longer than the window's 10-second look for its output device
   const n = (srv.logs.join('').match(/receiver connected/g) || []).length;
-  console.log('  receiver connections after 6 s:', n);
+  console.log('  receiver connections after 11 s:', n);
   assert.equal(n, 2, 'no ping-pong between windows');
   assert.equal(await second.evaluate(() => window.tailmic.status), 'Ready');
+  assert.equal(await receiver.evaluate(() => window.tailmic.status), 'Open in another window', 'the window that was replaced does not go back to "Ready"');
+});
+
+await run('messages keep up with what is true: Mute, a PC that stops playing, a reconnect, a closed PC window', { allowedCidrs: LAB_CIDRS, outputDeviceMatch: FAKE_OUTPUT }, async (t) => {
+  const { receiver, client, srv, rctx, cfg } = t;
+  const view = (page) => page.evaluate(() => ({
+    status: window.tailmic.status,
+    kind: document.getElementById('status').dataset.s,
+    msg: document.getElementById('msg').textContent,
+  }));
+  const clientView = async () => ({
+    ...(await view(client)),
+    ...(await client.evaluate(() => ({
+      mute: document.getElementById('mute').textContent,
+      pcLine: document.getElementById('pc').textContent,
+      micOn: (window.__streams.at(-1)?.getAudioTracks()[0] || {}).enabled,
+      calls: window.__pcs.length,
+    }))),
+  });
+  const pcDevice = (hide) => receiver.evaluate((h) => {
+    window.__hideOutputs = h;
+    navigator.mediaDevices.dispatchEvent(new Event('devicechange'));
+  }, hide);
+  await ready(t);
+  assert.equal((await clientView()).msg, 'Pick your microphone and click Connect.');
+  await client.click('#connect');
+  await connected(client);
+  await waitFor(client, () => window.tailmic.status === 'Connected');
+
+  // Mute says what it does.
+  await client.click('#mute');
+  let l = await clientView();
+  assert.deepEqual([l.status, l.kind, l.mute, l.micOn], ['Connected (muted)', 'ok', 'Unmute', false]);
+  assert.match(l.msg, /Muted: the game hears nothing/);
+
+  // The PC stops playing the microphone: that stays a warning, also when Mute is clicked.
+  await pcDevice(true);
+  await waitFor(client, () => /game cannot hear you/.test(window.tailmic.status), null, 15000);
+  await client.click('#mute');
+  l = await clientView();
+  assert.deepEqual([l.kind, l.mute, l.micOn], ['warn', 'Mute', true], 'unmuting does not turn the warning into "Connected"');
+  assert.match(l.status, /game cannot hear you/);
+  await client.click('#mute');
+  assert.match((await clientView()).status, /game cannot hear you/, 'nor does muting');
+  await pcDevice(false);
+  await waitFor(client, () => window.tailmic.status === 'Connected (muted)', null, 15000);
+
+  // The call drops and comes back by itself: still muted.
+  await receiver.reload();
+  await waitFor(client, () => window.__pcs.length === 2 && window.tailmic.status === 'Connected (muted)', null, 40000);
+  l = await clientView();
+  console.log('  after a reconnect:', JSON.stringify(l));
+  assert.deepEqual([l.mute, l.micOn], ['Unmute', false], 'a reconnect does not unmute the microphone');
+
+  // Disconnect: the next call starts unmuted, and the PC says why the call ended, but not for ever.
+  await client.click('#connect');
+  await waitFor(receiver, () => document.getElementById('msg').textContent === 'The client disconnected.');
+  l = await clientView();
+  assert.deepEqual([l.status, l.kind, l.mute, l.msg], ['Not connected', 'idle', 'Mute', 'Pick your microphone and click Connect.']);
+  await waitFor(receiver, () => document.getElementById('msg').textContent === 'Waiting for the client to connect.', null, 25000);
+  assert.equal((await view(receiver)).status, 'Ready');
+
+  // The PC window closes while the client page is open and idle: the page stops saying "click Connect".
+  await receiver.close();
+  await waitFor(client, () => document.getElementById('msg').textContent === 'TailMic is not running on the PC yet.', null, 15000);
+  assert.equal((await clientView()).pcLine, 'TailMic not running on the PC');
+  const back = await rctx.newPage();
+  await back.goto(`http://127.0.0.1:${cfg.receiverPort}/`);
+  await waitFor(client, () => document.getElementById('msg').textContent === 'Pick your microphone and click Connect.', null, 15000);
+
+  // The PC cannot be reached at all.
+  srv.stop();
+  await waitFor(client, () => window.tailmic.status === 'Cannot reach the PC', null, 15000);
+  l = await clientView();
+  console.log('  PC unreachable:', JSON.stringify({ status: l.status, msg: l.msg, pcLine: l.pcLine }));
+  assert.equal(l.pcLine, 'Cannot be reached right now');
+  assert.equal(await client.evaluate(() => document.getElementById('connect').disabled), false, 'Connect stays usable: the PC may be back any moment');
+  await waitFor(back, () => window.tailmic.status === 'TailMic server stopped');
+  await sleep(11500); // longer than the window's 10-second look for its output device
+  assert.equal(await back.evaluate(() => window.tailmic.status), 'TailMic server stopped', 'the PC window does not say "Ready" while its server is gone');
 });
 
 // ---------- "Test what the game hears" ----------
@@ -472,16 +554,17 @@ await run('test what the game hears: record and play back; the PC listens only d
     (await window.__pcs[window.__pcs.length - 1].getStats()).forEach((s) => { if (s.type === 'outbound-rtp') n += s.packetsSent || 0; });
     return n;
   });
-  assert.equal(sentBefore, 0, 'nothing is sent back to the laptop outside a test');
+  assert.equal(sentBefore, 0, 'nothing is sent back to the client outside a test');
 
   await client.click('#testRec');
   await waitFor(receiver, () => window.__liveTracks() === 1);
   const during = await pcListening(receiver);
-  assert.equal(during.row, 'ON - sending "Microphone (Steam Streaming Microphone)" back to the laptop', 'the PC window shows that it is listening, and to what');
+  assert.equal(during.row, 'ON - sending "Microphone (Steam Streaming Microphone)" back to the client', 'the PC window shows that it is listening, and to what');
   assert.equal((await health(cfg)).test, true, 'status shows it too');
   await testDone(client, 'rec');
   const rec = await client.evaluate(() => window.tailmic.test);
   await waitFor(client, () => /That is what the game hears/.test(document.getElementById('testMsg').textContent), null, 15000);
+  const note = Date.now();
   console.log('  recording:', JSON.stringify(rec), '| PC during:', JSON.stringify(during));
   assert.ok(rec.seconds > 4 && rec.seconds < 6.5, `about 5 s recorded, got ${rec.seconds}`);
   assert.ok(rec.peak > 0.002, 'the audio that came back is not silent');
@@ -491,6 +574,12 @@ await run('test what the game hears: record and play back; the PC listens only d
   assert.equal((await health(cfg)).test, false);
   assert.equal(await client.evaluate(() => window.tailmic.stats.connectionState), 'connected', 'the call stayed up');
   assert.match(srv.logs.join(''), /test: test@example\.com listens to what the game hears/, 'the test is logged');
+  // The note about the finished test makes way for the usual hint.
+  await waitFor(client, () => /^Ready\./.test(document.getElementById('testMsg').textContent), null, 25000);
+  const stayed = (Date.now() - note) / 1000;
+  console.log(`  the note stayed for about ${stayed.toFixed(0)} s`);
+  assert.ok(stayed > 10, 'long enough to read');
+  assert.equal(await client.evaluate(() => document.getElementById('testMsg').className), 'msg', 'and it is no longer green');
 }, WITH_STEAM_MIC);
 
 await run('test what the game hears: the tone check tells right from wrong device formats', TEST_CFG, async (t) => {
@@ -603,10 +692,10 @@ await run('test what the game hears: the PC stops listening at once if its confi
   await waitFor(receiver, () => window.__liveTracks() === 0, null, 3000); // ...and closed it again, long before the 30-second limit
   assert.deepEqual(await pcListening(receiver), { live: 0, row: 'off' });
   await waitFor(client, () => /did not start the test in time/.test(document.getElementById('testMsg').textContent), null, 12000);
-  console.log('  laptop was told:', await client.textContent('#testMsg'));
+  console.log('  client was told:', await client.textContent('#testMsg'));
   assert.equal(await client.evaluate(() => window.tailmic.stats.connectionState), 'connected');
 }, {
-  // As if the laptop had given up, or stopped the test, while the PC was still opening the microphone.
+  // As if the client had given up, or stopped the test, while the PC was still opening the microphone.
   steamMic: true,
   beforeReceiver: (rctx) => rctx.route('**/api/testack', (route) => route.fulfill({ status: 410, contentType: 'application/json', body: '{"error":"no_such_test"}' })),
 });
@@ -676,12 +765,12 @@ await run('resources: 25 calls in a row leave nothing open and no growing lists'
   }
   const c = await client.evaluate(() => ({ pcs: window.__openPcs(), mics: window.__liveTracks(), audioContexts: window.__openCtxs(), soundLog: window.tailmic.sounds.length, options: document.getElementById('mic').options.length }));
   const r = await receiver.evaluate(() => ({ pcs: window.__openPcs(), mics: window.__liveTracks(), audioContexts: window.__openCtxs(), playing: !!document.getElementById('audio').srcObject }));
-  console.log('  laptop page:', JSON.stringify(c), '| PC window:', JSON.stringify(r), '| calls:', offers(srv));
+  console.log('  client page:', JSON.stringify(c), '| PC window:', JSON.stringify(r), '| calls:', offers(srv));
   assert.equal(offers(srv), 25);
-  assert.deepEqual({ pcs: c.pcs, mics: c.mics }, { pcs: 0, mics: 0 }, 'laptop: every connection and microphone was closed');
-  assert.ok(c.audioContexts <= 1, `laptop: only the one for the alert sounds stays (${c.audioContexts})`);
-  assert.ok(c.soundLog <= 20, 'laptop: the sound history is short');
-  assert.ok(c.options <= 4, 'laptop: the microphone list is not appended to');
+  assert.deepEqual({ pcs: c.pcs, mics: c.mics }, { pcs: 0, mics: 0 }, 'client: every connection and microphone was closed');
+  assert.ok(c.audioContexts <= 1, `client: only the one for the alert sounds stays (${c.audioContexts})`);
+  assert.ok(c.soundLog <= 20, 'client: the sound history is short');
+  assert.ok(c.options <= 4, 'client: the microphone list is not appended to');
   assert.deepEqual(r, { pcs: 0, mics: 0, audioContexts: 0, playing: false }, 'PC: nothing left open');
 });
 

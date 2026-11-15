@@ -1,9 +1,9 @@
-// TailMic tone check: the laptop sends a steady test tone through the PC and
+// TailMic tone check: the client sends a steady test tone through the PC and
 // measures the pitch that comes back from "Microphone (Steam Streaming Microphone)".
 // A wrong pitch means the two halves of Steam's device use different audio formats.
 // Pure functions (no browser APIs), so the unit tests can run them in Node.
 
-/** The tone the laptop sends, in Hz. */
+/** The tone the client sends, in Hz. */
 export const TONE_HZ = 1000;
 
 /** A measurement quieter than this (dB, strongest frequency) counts as silence. */

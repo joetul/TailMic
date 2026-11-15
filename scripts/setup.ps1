@@ -46,7 +46,7 @@ if (-not $dns -or -not $dns.EndsWith('.ts.net')) {
 }
 Write-Ok "This PC on the tailnet: $dns"
 
-# Who may use TailMic: the Tailscale login of the LAPTOP's user.
+# Who may use TailMic: the Tailscale login of the CLIENT's user (the client is the computer you talk into).
 $tags = @(Get-TailscaleSelfTags $st)
 $login = ''
 $suggest = @()
@@ -63,7 +63,7 @@ if ($tags.Count -gt 0) {
     # A tagged device has no user of its own; what Tailscale reports as its "user"
     # (for example this PC's own name) must never be suggested.
     Write-Host "   This PC is a tagged Tailscale device ($($tags -join ', ')). That works, but a tagged device has no user,"
-    Write-Host '   so the allowed user is the Tailscale login of your LAPTOP.'
+    Write-Host '   so the allowed user is the Tailscale login of the CLIENT (the computer you talk into).'
 } else {
     $self = ([string](Get-TailscaleLogin $st)).Trim().ToLower()
     if ($self.Contains('@') -and -not (Get-LoginProblem $self $dns) -and ($suggest -notcontains $self)) { $suggest += $self }
@@ -86,9 +86,9 @@ if ($AllowedUser) {
         for ($i = 0; $i -lt $suggest.Count; $i++) { Write-Host "     $($i + 1). $($suggest[$i])" }
     }
     if ($suggest.Count -eq 0) {
-        Write-Host '   Your login is shown in the Tailscale menu on the laptop, and at https://login.tailscale.com/admin/users'
+        Write-Host '   Your login is shown in the Tailscale menu on the client (the computer you talk into), and at https://login.tailscale.com/admin/users'
         Write-Host '   Hard to type here (for example through Moonlight)? Press Enter to skip, and set it later'
-        Write-Host '   from the laptop over SSH with:  TailMic.cmd set-user <login>'
+        Write-Host '   from the client over SSH with:  TailMic.cmd set-user <login>'
     }
     while ($true) {
         if ($suggest.Count -eq 1) {
@@ -103,7 +103,7 @@ if ($AllowedUser) {
                 $typed = $suggest[$n - 1]
             }
         } else {
-            $typed = (Read-Host '   Tailscale login of the laptop user (e.g. you@gmail.com)').Trim()
+            $typed = (Read-Host '   Tailscale login of the client user (e.g. you@gmail.com)').Trim()
             if (-not $typed) { break }
         }
         $typed = $typed.ToLower()
@@ -175,7 +175,7 @@ if ($eps.Count -gt 0) {
     Write-Host '       ("Speakers (Steam Streaming Speakers)" is a different device and does not count.)'
     Write-Host '       Fix: Steam installs the device the first time you use Steam Remote Play:'
     Write-Host '         1. On this PC: Steam -> Settings -> Remote Play -> turn on "Enable Remote Play".'
-    Write-Host '         2. On the laptop: install the free Steam Link app and connect to this PC once'
+    Write-Host '         2. On the client (the computer you talk into): install the free Steam Link app and connect to this PC once'
     Write-Host '            (type the PIN it shows here on the PC).'
     Write-Host '         3. Close Steam Link right away. Then run Setup again; it also checks the audio format.'
     Write-Host '       See README -> Troubleshooting.'
@@ -242,7 +242,7 @@ Write-Host ''
 Write-Host '=====================================================================' -ForegroundColor Cyan
 if ($problems -eq 0) { Write-Host ' Setup complete.' -ForegroundColor Green } else { Write-Host " Setup finished with $problems problem(s) - see the red lines above." -ForegroundColor Yellow }
 Write-Host ''
-Write-Host ' On your laptop, open this address in Chrome or another Chromium-based browser (copied to clipboard):'
+Write-Host ' On the client (the computer you talk into), open this address in Chrome or another Chromium-based browser (copied to clipboard):'
 Write-Host "     $url" -ForegroundColor White
 Write-Host ''
 Write-Host ' In your game, choose the microphone:  Microphone (Steam Streaming Microphone)'

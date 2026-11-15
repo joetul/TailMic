@@ -97,7 +97,7 @@ function Get-LoginProblem([string]$login, [string]$dns) {
 }
 
 # Logins of the users who own the other, untagged devices this PC can see in the
-# tailnet. One of them is almost certainly the laptop's user.
+# tailnet. One of them is almost certainly the client's user.
 function Get-TailscalePeerLogins($st, [string]$dns) {
     $found = @()
     try {
@@ -462,7 +462,7 @@ function Register-TailMicTask {
     $principal = New-ScheduledTaskPrincipal -UserId (Get-CurrentUserName) -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
     Register-ScheduledTask -TaskName $Script:TaskName -Action $action -Principal $principal -Settings $settings `
-        -Description 'Starts TailMic (laptop microphone -> Steam Streaming Microphone). Run on demand, e.g. over SSH.' -Force -ErrorAction Stop | Out-Null
+        -Description 'Starts TailMic (microphone over Tailscale -> Steam Streaming Microphone). Run on demand, e.g. over SSH.' -Force -ErrorAction Stop | Out-Null
 }
 
 # The "TailMic" scheduled task, or $null when there is none.
@@ -584,8 +584,8 @@ function Show-TailMicStatus($h) {
     $users = @($h.allowedUsers | Where-Object { $_ })
     if ($users.Count -gt 0) { Write-Ok "Allowed user: $($users -join ', ')" }
     else { Write-Bad 'Allowed user: NONE, so nobody can connect. Set it with:  TailMic.cmd set-user <your Tailscale login>' }
-    if ($h.call) { Write-Ok "Call: $($h.call.user) ($($h.call.state))" } else { Write-Host '   --  Call: none (connect from the laptop)' }
-    if ($h.test) { Write-Warn2 'Test running: the laptop is listening to "Microphone (Steam Streaming Microphone)"' }
-    if ($h.serveHost) { Write-Host "   Laptop address: https://$($h.serveHost):$($h.httpsPort)" }
+    if ($h.call) { Write-Ok "Call: $($h.call.user) ($($h.call.state))" } else { Write-Host '   --  Call: none (connect from the client)' }
+    if ($h.test) { Write-Warn2 'Test running: the client is listening to "Microphone (Steam Streaming Microphone)"' }
+    if ($h.serveHost) { Write-Host "   Client address: https://$($h.serveHost):$($h.httpsPort)" }
     return [bool]($current -and $h.receiverWindow -and $h.outputDevice -and $formatOk -and $users.Count -gt 0)
 }

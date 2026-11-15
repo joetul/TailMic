@@ -77,7 +77,7 @@ if (-not $st -or [string]$st.BackendState -ne 'Running') {
     } elseif ($cur -ne $target) {
         Write-Warn2 "Port $($cfg.httpsPort) is used by another Tailscale Serve app ($cur). Run Setup-TailMic again."
     }
-    Write-Host "Laptop address: https://${dns}:$($cfg.httpsPort)"
+    Write-Host "Client address: https://${dns}:$($cfg.httpsPort)"
 }
 
 # ---- Server

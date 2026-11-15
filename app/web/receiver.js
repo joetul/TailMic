@@ -2,9 +2,9 @@
 // Plays the incoming WebRTC audio ONLY into "Speakers (Steam Streaming Microphone)",
 // so games hear it on "Microphone (Steam Streaming Microphone)".
 //
-// Only while the laptop runs "Test what the game hears" does this page also
+// Only while the client runs "Test what the game hears" does this page also
 // listen: it opens "Microphone (Steam Streaming Microphone)" (that device and no
-// other) and sends its sound back to the laptop over the same connection. Nothing
+// other) and sends its sound back to the client over the same connection. Nothing
 // is stored, and it stops when the test ends, the call ends, or after 30 seconds.
 import { filterCandidates, selectedPair, isAllowedAddress, isAllowedEndpoint } from './sdp.js';
 
@@ -28,23 +28,51 @@ let pc = null;
 let sessionId = null;
 let events = null;
 let lastReported = '';
-let returnSender = null; // sends audio back to the laptop; has no track (sends nothing) except during a test
+let returnSender = null; // sends audio back to the client; has no track (sends nothing) except during a test
 let test = null;         // the running "what the game hears" test: { track, timer }
 // The one microphone a test may listen to, found by this part of its name. Fixed
 // here on purpose, not a setting: no change to config.json can point a test at
 // another microphone on the PC.
 const TEST_MICROPHONE = 'steam streaming microphone';
-const TEST_MAX_MS = 30000; // a test stops by itself after this long unless the laptop asks again
+const TEST_MAX_MS = 30000; // a test stops by itself after this long unless the client asks again
+// "The client" is the computer that sends its microphone: usually a laptop, but
+// any computer with a Chromium browser will do (the README uses the same word).
+const WAITING = 'Waiting for the client to connect.';
+const NOTE_MS = 15000; // why the last call ended stays on screen this long, then WAITING is back
+let noteTimer = 0;
+let online = false;   // connected to the TailMic server on this PC
+let finished = false; // this window was told to stop (TailMic stopped, or another window took over)
+const timers = [];
 
 window.tailmic = { stats: {} };
 
 function setStatus(kind, text, msg = '', isErr = false) {
+  clearTimeout(noteTimer);
   ui.status.dataset.s = kind;
   ui.statusText.textContent = text;
   ui.msg.textContent = msg;
   ui.msg.classList.toggle('err', isErr);
   document.title = `TailMic (PC) - ${text}`;
   window.tailmic.status = text;
+}
+
+/**
+ * No call. `note` says why the last one ended; it makes way for the usual line
+ * after a while, so the window does not say "the client disconnected" for hours.
+ * A `problem` (red) stays until the next call.
+ */
+function showReady(note = '', problem = false) {
+  setStatus('ok', 'Ready', note || WAITING, problem);
+  if (note && !problem) noteTimer = setTimeout(() => { if (!pc && !finished) setStatus('ok', 'Ready', WAITING); }, NOTE_MS);
+}
+
+/** Put the status line back to what is true right now (after a problem went away). */
+function showCurrent() {
+  const st = pc ? pc.connectionState : '';
+  if (!pc) showReady();
+  else if (st === 'connected') setStatus('ok', 'Connected', `Receiving ${ui.user.textContent}'s microphone.`);
+  else if (st === 'disconnected') setStatus('warn', 'Connection interrupted...');
+  else setStatus('warn', 'Connecting...', `Incoming call from ${ui.user.textContent}`);
 }
 
 async function api(path, body) {
@@ -58,6 +86,7 @@ async function api(path, body) {
 }
 
 function report() {
+  if (finished) return; // another window (or nobody) speaks for this PC now
   const st = { deviceFound: !!(sinkId && sinkApplied), deviceLabel: sinkLabel, state: pc ? pc.connectionState : 'idle', testing: !!test, needsPermission: asking };
   const key = JSON.stringify(st);
   if (key === lastReported) return;
@@ -70,7 +99,7 @@ function report() {
 // profile that permission for this page alone, and then nothing needs to be
 // opened: the names are simply there. Only if that did not work (the page then
 // sees no names) does it ask, by opening a microphone and closing it right away.
-const PERMISSION_HELP = 'Click "Allow" when the browser asks (one time only). TailMic uses this to find the Steam Streaming Microphone device, and for "Test what the game hears" when you start that from the laptop. Nothing is stored.';
+const PERMISSION_HELP = 'Click "Allow" when the browser asks (one time only). TailMic uses this to find the Steam Streaming Microphone device, and for "Test what the game hears" when you run that test. Nothing is stored.';
 let unlocking = null;
 function unlock() {
   if (!unlocking) unlocking = doUnlock().finally(() => { unlocking = null; });
@@ -120,11 +149,13 @@ async function doUnlock() {
 
 // Look for the output device again; if this PC had no input device before, check whether one appeared.
 async function refreshDevice() {
+  if (finished) return;
   if (!permOk && noInput) await unlock();
   if (permOk) await findDevice();
 }
 
 async function findDevice() {
+  if (finished) return;
   const devs = (await navigator.mediaDevices.enumerateDevices())
     .filter((d) => d.kind === 'audiooutput' && d.deviceId !== 'default' && d.deviceId !== 'communications');
   const want = cfg.outputDeviceMatch.toLowerCase();
@@ -160,15 +191,14 @@ async function findDevice() {
     }
   }
   ui.device.textContent = sinkApplied ? sinkLabel : `${sinkLabel} (could not select)`;
-  if (sinkApplied && ui.status.dataset.s !== 'ok') {
-    if (!pc) setStatus('ok', 'Ready', 'Waiting for your laptop to connect.');
-    else if (pc.connectionState === 'connected') setStatus('ok', 'Connected', `Receiving ${ui.user.textContent}'s microphone.`);
-  }
+  // The device is there (again): if the status line still shows a problem, put it
+  // right. Not while the server is unreachable: that problem is still true.
+  if (sinkApplied && online && ui.status.dataset.s !== 'ok') showCurrent();
   report();
 }
 
 // ---------- "Test what the game hears" ----------
-// The laptop asks (through the server, which checks the Tailscale user) to hear
+// The client asks (through the server, which checks the Tailscale user) to hear
 // what a game gets from "Microphone (Steam Streaming Microphone)".
 
 /** Stop listening to the Steam microphone (safe to call when no test runs). */
@@ -214,9 +244,9 @@ async function startTest(d) {
     if (pc !== peer) throw new Error('the call ended');
     test = { track, timer: setTimeout(stopTest, TEST_MAX_MS) };
     track.onended = stopTest; // Steam's device disappeared
-    ui.test.textContent = `ON - sending "${track.label}" back to the laptop`;
+    ui.test.textContent = `ON - sending "${track.label}" back to the client`;
     report();
-    // If the laptop gave up or stopped the test meanwhile, the server refuses this
+    // If the client gave up or stopped the test meanwhile, the server refuses this
     // confirmation: stop at once instead of listening until the 30-second limit.
     const ack = await api('/api/testack', { id: d.id, ok: true, device: track.label }).catch(() => null);
     if (!ack || !ack.ok) stopTest();
@@ -227,7 +257,7 @@ async function startTest(d) {
   }
 }
 
-function closePc(reason) {
+function closePc(reason = '', problem = false) {
   stopTest();
   // Tell the server this call is over, so it doesn't stay listed as active.
   if (sessionId) api('/api/ended', { id: sessionId }).catch(() => {});
@@ -242,7 +272,8 @@ function closePc(reason) {
   audio.srcObject = null;
   ui.user.textContent = ui.route.textContent = ui.rtt.textContent = ui.buf.textContent = ui.lost.textContent = '-';
   ui.meter.style.width = '0';
-  if (sinkApplied) setStatus('ok', 'Ready', reason || 'Waiting for your laptop to connect.');
+  // (Without the output device, or without the server, the status line already says what is wrong.)
+  if (sinkApplied && online && !finished) showReady(reason, problem);
   report();
 }
 
@@ -258,7 +289,7 @@ function waitForIce(peer, ms) {
 
 let latestOfferId = null;
 async function onOffer(d) {
-  if (d.id !== latestOfferId) return; // a newer call already arrived; this one was replaced
+  if (finished || d.id !== latestOfferId) return; // a newer call already arrived; this one was replaced
   closePc();
   // Refresh settings (the PC's Tailscale IPs may not have been known at start-up).
   try { const c = await api('/api/rconfig'); if (c && Array.isArray(c.allowedUsers)) cfg = c; } catch { /* keep the old ones */ }
@@ -298,8 +329,8 @@ async function onOffer(d) {
   try {
     await peer.setRemoteDescription({ type: 'offer', sdp: d.sdp });
     if (stale()) return;
-    // Offer a way back to the laptop for "Test what the game hears". It carries
-    // no track, so nothing is sent until the laptop starts a test.
+    // Offer a way back to the client for "Test what the game hears". It carries
+    // no track, so nothing is sent until the client starts a test.
     const tx = peer.getTransceivers().find((t) => t.receiver.track && t.receiver.track.kind === 'audio');
     if (tx) {
       tx.direction = 'sendrecv';
@@ -332,7 +363,7 @@ async function stats() {
   const pair = selectedPair(report);
   if (pair && pair.local && pair.remote) {
     if (!isAllowedEndpoint(pair.local, cfg.allowedCidrs, cfg.pcIps) || !isAllowedAddress(pair.remote, cfg.allowedCidrs)) {
-      closePc(`Blocked a connection that was not over Tailscale (${pair.local} -> ${pair.remote}).`);
+      closePc(`Blocked a connection that was not over Tailscale (${pair.local} -> ${pair.remote}).`, true);
       return;
     }
     ui.route.textContent = `${pair.remote} → ${pair.local} (Tailscale)`;
@@ -373,32 +404,49 @@ function connectEvents() {
     latestOfferId = d.id;
     chain = chain.then(() => onOffer(d)).catch(() => {});
   });
-  events.addEventListener('quit', () => {
-    // Stop-TailMic: end any call and close this window, so the browser exits cleanly.
+  // This window is done: stop looking for devices and reporting, so that nothing
+  // puts "Ready" back on a window that no longer receives calls.
+  const finish = () => {
     events.close();
     closePc();
+    finished = true;
+    timers.forEach(clearInterval);
+  };
+  events.addEventListener('quit', () => {
+    // Stop-TailMic: end any call and close this window, so the browser exits cleanly.
+    finish();
     setStatus('idle', 'TailMic stopped', 'You can close this window.');
     setTimeout(() => window.close(), 200);
   });
   events.addEventListener('replaced', () => {
     // Another TailMic window took over. Stop here instead of fighting over it.
-    events.close();
-    closePc();
+    finish();
     setStatus('warn', 'Open in another window', 'TailMic is running in another window. You can close this one.');
   });
   events.addEventListener('hangup', (e) => {
     const d = JSON.parse(e.data);
     if (d.id === latestOfferId) latestOfferId = null; // don't start a call that was already hung up
-    if (d.id === sessionId) closePc(d.reason === 'replaced' ? 'Another device connected.' : 'Your laptop disconnected.');
+    if (d.id !== sessionId) return;
+    // 'replaced': a newer call took over; 'failed': this call never got going
+    // (for example the PC answered too late); otherwise the client hung up or left.
+    closePc({ replaced: 'Another client connected.', failed: 'The call could not be set up.' }[d.reason] || 'The client disconnected.');
   });
   events.addEventListener('test', (e) => {
     const d = JSON.parse(e.data);
     if (d.action === 'start') startTest(d).catch(() => {});
     else if (d.id === sessionId) stopTest();
   });
-  events.addEventListener('open', () => { lastReported = ''; report(); });
+  events.addEventListener('open', () => {
+    online = true;
+    lastReported = '';
+    report();
+    // Back after the server was away: replace "TailMic server stopped" with what is true now.
+    if (permOk) findDevice().catch(() => {});
+  });
   events.addEventListener('error', () => {
-    if (events.readyState === EventSource.CONNECTING) setStatus('bad', 'TailMic server stopped', 'Reconnecting... If this stays, run Start-TailMic again on this PC.', true);
+    if (events.readyState !== EventSource.CONNECTING) return;
+    online = false;
+    setStatus('bad', 'TailMic server stopped', 'Reconnecting... If this stays, run Start-TailMic again on this PC.', true);
   });
 }
 
@@ -424,6 +472,7 @@ ui.perm.addEventListener('click', async () => {
   if (permOk) await findDevice();
   report();
   navigator.mediaDevices.addEventListener('devicechange', () => refreshDevice().catch(() => {}));
-  setInterval(() => stats().catch(() => {}), 1000);
-  setInterval(() => refreshDevice().catch(() => {}), 10000);
+  if (finished) return;
+  timers.push(setInterval(() => stats().catch(() => {}), 1000));
+  timers.push(setInterval(() => refreshDevice().catch(() => {}), 10000));
 })();

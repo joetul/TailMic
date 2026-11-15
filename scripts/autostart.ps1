@@ -16,7 +16,7 @@ if ($Enable) {
     $s.Arguments = $c.Args
     $s.WorkingDirectory = $Script:Root
     $s.WindowStyle = 7
-    $s.Description = 'Start TailMic (laptop microphone -> Steam Streaming Microphone)'
+    $s.Description = 'Start TailMic (microphone over Tailscale -> Steam Streaming Microphone)'
     $s.Save()
     Write-Ok "TailMic will start when you log in ($lnk)."
     exit 0

@@ -1,5 +1,5 @@
 # Set the one Tailscale user who may use TailMic, without any question to answer.
-# Works over SSH, so the login can be pasted from the laptop:
+# Works over SSH, so the login can be pasted from the client (the computer you talk into):
 #   TailMic.cmd set-user you@example.com
 param(
     [Parameter(Position = 0)][string]$Login,
@@ -23,7 +23,7 @@ if (-not $Login) {
 $why = Get-LoginProblem $Login ([string]$cfg.serveHost)
 if ($why) {
     Write-Bad "'$Login' cannot be used: $why."
-    Write-Host '       Use the Tailscale login of the LAPTOP user. It is shown in the Tailscale menu on the laptop.'
+    Write-Host '       Use the Tailscale login of the CLIENT user (the client is the computer you talk into). It is shown in the Tailscale menu there.'
     exit 1
 }
 if (-not $Login.Contains('@') -and -not $Force) {

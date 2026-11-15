@@ -1,4 +1,5 @@
-// TailMic client (runs in Chrome, or another Chromium-based browser, on the laptop).
+// TailMic client page (runs in Chrome, or another Chromium-based browser, on the client:
+// the computer you talk into, usually a laptop).
 import { filterCandidates, mungeOpus, selectedPair, isAllowedAddress, isAllowedEndpoint } from './sdp.js';
 import { TONE_HZ, peakFrequency, classifyTone } from './tone.js';
 
@@ -25,6 +26,9 @@ let usingFallbackMic = false; // the chosen mic was unavailable, so the system d
 let micSender = null;   // sends the microphone (or, during a tone check, the test tone) to the PC
 let returnTrack = null; // audio coming back from the PC: silent, except during "Test what the game hears"
 let test = null;        // the running test, see runTest()
+let muted = false;      // you clicked Mute: kept when the call reconnects by itself, cleared by Disconnect
+let pcError = null;     // why the PC's state could not be read (while not connected)
+let idleView = false;   // the status line shows the plain "not connected" view, which showIdle() keeps current
 
 // Every connection attempt gets a number. Anything an older attempt finishes
 // after you clicked Disconnect (or after a newer attempt started) is thrown
@@ -35,6 +39,7 @@ let attempt = 0;
 window.tailmic = { stats: {}, sounds: [], test: null };
 
 function setStatus(kind, text, msg = '', isErr = false) {
+  idleView = false;
   ui.status.dataset.s = kind;
   ui.statusText.textContent = text;
   ui.msg.textContent = msg;
@@ -101,19 +106,64 @@ async function watchPc() {
   let c;
   try { c = await api('/api/config?poll'); } catch { return; } // a real drop is noticed by the call itself
   if (!up) return;
+  cfg = c;
+  renderPc();
   const ok = !!(c.receiverOnline && c.receiver && c.receiver.deviceFound);
   if (ok === pcOk) return;
   pcOk = ok;
-  cfg = c;
-  renderPc();
-  if (ok) {
-    playSound('up');
-    onConnState();
+  playSound(ok ? 'up' : 'down');
+  if (pc?.connectionState === 'connected') showConnected();
+}
+
+/** The call is up: say so, or say why the game still cannot hear you. */
+function showConnected() {
+  if (!pcOk) {
+    // Stays a warning whatever else happens (Mute, a microphone switch): the game hears nothing.
+    setStatus('warn', 'Connected, but the game cannot hear you', cfg && cfg.receiverOnline
+      ? 'The PC lost "Speakers (Steam Streaming Microphone)". Is Steam still running on the PC?'
+      : 'The TailMic window on the PC was closed. Start TailMic on the PC again.');
+  } else if (muted) {
+    setStatus('ok', 'Connected (muted)', 'Muted: the game hears nothing until you click Unmute.');
   } else {
-    playSound('down');
-    setStatus('warn', 'Connected, but the game cannot hear you',
-      c.receiverOnline ? 'The PC lost "Speakers (Steam Streaming Microphone)". Is Steam still running on the PC?' : 'The TailMic window on the PC was closed. Start TailMic on the PC again.');
+    setStatus('ok', 'Connected', usingFallbackMic
+      ? 'Connected using the system default microphone (your chosen one is not available).'
+      : 'The PC now hears this microphone as "Microphone (Steam Streaming Microphone)".');
   }
+}
+
+/** Not connected and nothing in progress: say what to do next, from what is known about the PC right now. */
+function showIdle() {
+  renderConnect();
+  if (pcError) {
+    const title = !pcError.retry ? 'Not allowed' : pcError.code === 'network' ? 'Cannot reach the PC' : 'Not connected';
+    setStatus('bad', title, pcError.message, true);
+  } else {
+    setStatus('idle', 'Not connected', cfg && cfg.receiverOnline ? 'Pick your microphone and click Connect.' : 'TailMic is not running on the PC yet.');
+  }
+  idleView = true;
+}
+
+/** Connect is switched off only while the PC refuses this Tailscale user. */
+function renderConnect() {
+  ui.connect.disabled = !wantConnected && !!pcError && !pcError.retry;
+}
+
+function renderMute() {
+  ui.mute.setAttribute('aria-pressed', String(muted));
+  ui.mute.textContent = muted ? 'Unmute' : 'Mute';
+}
+
+// Keep the "PC" line, and the hint under "Not connected", current while not connected.
+async function lookAtPc(path = '/api/config?poll') {
+  let c = null;
+  let err = null;
+  try { c = await api(path); } catch (e) { err = e; }
+  if (wantConnected) return; // a call was started meanwhile; it reads the PC's state itself
+  pcError = err;
+  if (c) cfg = c;
+  renderPc();
+  renderConnect();
+  if (idleView) showIdle();
 }
 
 class TailMicError extends Error {
@@ -136,9 +186,9 @@ async function api(path, { method = 'GET', body } = {}) {
   try { j = await r.json(); } catch { /* ignore */ }
   if (!r.ok) {
     const code = j.error || `http_${r.status}`;
-    // 403 = not allowed; 409 = another device took over. Retrying would not help.
+    // 403 = not allowed; 409 = another client took over. Retrying would not help.
     const retry = r.status !== 403 && code !== 'replaced';
-    const msg = code === 'replaced' ? 'Another device took over the TailMic microphone.' : (j.message || j.error || `HTTP ${r.status}`);
+    const msg = code === 'replaced' ? 'Another client took over the TailMic microphone.' : (j.message || j.error || `HTTP ${r.status}`);
     throw new TailMicError(msg, code, retry);
   }
   return j;
@@ -257,9 +307,7 @@ function cleanup() {
   stream = null;
   last = null;
   ui.route.textContent = ui.rtt.textContent = ui.rate.textContent = ui.codec.textContent = ui.proc.textContent = '-';
-  ui.mute.disabled = true;
-  ui.mute.setAttribute('aria-pressed', 'false');
-  ui.mute.textContent = 'Mute';
+  ui.mute.disabled = true; // (its label keeps saying whether you are muted, for when the call is back)
   renderTest();
 }
 
@@ -282,8 +330,10 @@ async function connect() {
   let myStream = null;
   let myPc = null;
   try {
-    const c = await api('/api/config');
+    let c;
+    try { c = await api('/api/config'); } catch (e) { check(); pcError = e; renderPc(); throw e; }
     check();
+    pcError = null;
     cfg = c;
     renderPc();
     if (!cfg.receiverOnline) throw new TailMicError('TailMic is not running on the PC. Double-click Start-TailMic on the PC.', 'receiver_offline');
@@ -298,6 +348,7 @@ async function connect() {
     await listMics();
     check();
     const track = stream.getAudioTracks()[0];
+    track.enabled = !muted; // still muted after a reconnect, if you were
     prepareTrack(track);
 
     myPc = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require' });
@@ -372,10 +423,7 @@ function onConnState() {
   if (st === 'connected') {
     clearTimeout(discTimer);
     if (!up) { up = true; pcOk = true; playSound('up'); }
-    const msg = usingFallbackMic
-      ? 'Connected using the system default microphone (your chosen one is not available).'
-      : 'The PC now hears this microphone as "Microphone (Steam Streaming Microphone)".';
-    setStatus('ok', ui.mute.getAttribute('aria-pressed') === 'true' ? 'Connected (muted)' : 'Connected', msg);
+    showConnected();
   } else if (st === 'disconnected') {
     setStatus('warn', 'Connection interrupted...');
     clearTimeout(discTimer);
@@ -396,7 +444,7 @@ async function lost() {
     if (my !== attempt || !wantConnected) return;
     if (c.activeSession && c.activeSession !== mine) {
       stop(false);
-      setStatus('warn', 'Not connected', 'Another device took over the TailMic microphone.');
+      setStatus('warn', 'Not connected', 'Another client took over the TailMic microphone.');
       return;
     }
   } catch { /* retry below */ }
@@ -453,10 +501,12 @@ function stop(sendHangup) {
   clearTimeout(retryTimer);
   if (sendHangup && sessionId) api('/api/hangup', { method: 'POST', body: { id: sessionId } }).catch(() => {});
   sessionId = null;
+  muted = false; // the next call starts unmuted
+  renderMute();
   cleanup();
   ui.connect.textContent = 'Connect';
   ui.connect.classList.add('primary');
-  setStatus('idle', 'Not connected');
+  showIdle();
 }
 
 // ---------- "Test what the game hears" ----------
@@ -568,7 +618,6 @@ async function testRecord(t, back) {
   for (const v of buf.getChannelData(0)) peak = Math.max(peak, Math.abs(v));
   window.tailmic.test = { kind: 'rec', seconds: buf.duration, peak };
   if (peak < 0.002) {
-    const muted = ui.mute.getAttribute('aria-pressed') === 'true';
     setTestMsg(muted ? 'The recording is silent, because you are muted. Click Unmute and try again.'
       : 'The recording is silent: nothing reached "Microphone (Steam Streaming Microphone)" on the PC. Does the meter above move when you talk? If it does, run "Tone check".', 'bad');
     return;
@@ -686,8 +735,9 @@ ui.testTone.addEventListener('click', () => runTest('tone'));
 ui.testLive.addEventListener('click', () => runTest('live'));
 
 function renderPc() {
+  if (cfg) ui.who.textContent = `Signed in to Tailscale as ${cfg.user}`;
+  if (pcError) { ui.pc.textContent = pcError.retry ? 'Cannot be reached right now' : 'Not allowed'; return; }
   if (!cfg) return;
-  ui.who.textContent = `Signed in to Tailscale as ${cfg.user}`;
   const r = cfg.receiver || {};
   if (!cfg.receiverOnline) ui.pc.textContent = 'TailMic not running on the PC';
   else if (!r.deviceFound) ui.pc.textContent = 'Running, but "Steam Streaming Microphone" not found (is Steam running?)';
@@ -703,10 +753,10 @@ ui.connect.addEventListener('click', () => {
 ui.mute.addEventListener('click', () => {
   const t = stream?.getAudioTracks()[0];
   if (!t) return;
-  t.enabled = !t.enabled;
-  ui.mute.setAttribute('aria-pressed', String(!t.enabled));
-  ui.mute.textContent = t.enabled ? 'Mute' : 'Unmute';
-  if (pc?.connectionState === 'connected') setStatus('ok', t.enabled ? 'Connected' : 'Connected (muted)', ui.msg.textContent);
+  muted = !muted;
+  t.enabled = !muted;
+  renderMute();
+  if (pc?.connectionState === 'connected') showConnected();
 });
 
 function prepareTrack(track) {
@@ -733,7 +783,6 @@ async function switchInput() {
   if (!sender || !stream || pc.connectionState !== 'connected') { connect(); return; } // still connecting: start over with the new choice
   switching = true;
   const my = attempt;
-  const wasEnabled = stream.getAudioTracks()[0]?.enabled !== false;
   let next = null;
   try {
     // Close the old mic first: browsers may refuse two different processing
@@ -743,11 +792,12 @@ async function switchInput() {
     next = await openMic();
     if (my !== attempt || !wantConnected) { stopStream(next); return; }
     const t = next.getAudioTracks()[0];
-    t.enabled = wasEnabled;
+    t.enabled = !muted;
     prepareTrack(t);
     await sender.replaceTrack(t);
     if (my !== attempt || !wantConnected) { stopStream(next); return; }
     stream = next;
+    t.enabled = !muted; // (Mute may have been clicked while the microphone was being swapped)
     startMeter();
     if (pc?.connectionState === 'connected') onConnState();
   } catch {
@@ -794,20 +844,10 @@ window.addEventListener('pagehide', () => {
     return;
   }
   await listMics().catch(() => {});
-  try {
-    cfg = await api('/api/config');
-    renderPc();
-    ui.connect.disabled = false;
-    setStatus('idle', 'Not connected', cfg.receiverOnline ? 'Pick your microphone and click Connect.' : 'TailMic is not running on the PC yet.');
-  } catch (e) {
-    setStatus('bad', 'Not allowed', e.message, true);
-    if (e.retry) { ui.connect.disabled = false; }
-  }
+  idleView = true;
+  await lookAtPc('/api/config');
   // Keep the "PC" line current. Not while this tab is hidden with nothing
   // connected: then nobody is looking, and the PC is left alone.
-  const lookAtPc = async () => {
-    try { cfg = await api('/api/config?poll'); renderPc(); } catch { /* ignore */ }
-  };
   setInterval(() => {
     if (wantConnected) { if (up) watchPc(); return; }
     if (!document.hidden) lookAtPc();
