@@ -1,19 +1,25 @@
 // TailMic receiver (runs in a dedicated Chrome or Edge window on the gaming PC).
 // Plays the incoming WebRTC audio ONLY into "Speakers (Steam Streaming Microphone)",
 // so games hear it on "Microphone (Steam Streaming Microphone)".
+//
+// Only while the laptop runs "Test what the game hears" does this page also
+// listen: it opens "Microphone (Steam Streaming Microphone)" (that device and no
+// other) and sends its sound back to the laptop over the same connection. Nothing
+// is stored, and it stops when the test ends, the call ends, or after 30 seconds.
 import { filterCandidates, selectedPair, isAllowedAddress, isAllowedEndpoint } from './sdp.js';
 
 const $ = (id) => document.getElementById(id);
 const ui = {
   status: $('status'), statusText: $('statusText'), msg: $('msg'), meter: $('meter'),
   permRow: $('permRow'), perm: $('perm'), device: $('device'), users: $('users'), user: $('user'),
-  route: $('route'), rtt: $('rtt'), buf: $('buf'), lost: $('lost'),
+  route: $('route'), rtt: $('rtt'), buf: $('buf'), lost: $('lost'), test: $('test'),
 };
 /** @type {HTMLAudioElement} */
 const audio = $('audio');
 
 let cfg = null;
 let permOk = false;
+let asking = false;  // waiting for someone at the PC to answer the browser's permission question
 let noInput = false; // this PC has no audio input device at all (so no Steam Streaming Microphone either)
 let sinkId = null;
 let sinkLabel = '';
@@ -22,6 +28,13 @@ let pc = null;
 let sessionId = null;
 let events = null;
 let lastReported = '';
+let returnSender = null; // sends audio back to the laptop; has no track (sends nothing) except during a test
+let test = null;         // the running "what the game hears" test: { track, timer }
+// The one microphone a test may listen to, found by this part of its name. Fixed
+// here on purpose, not a setting: no change to config.json can point a test at
+// another microphone on the PC.
+const TEST_MICROPHONE = 'steam streaming microphone';
+const TEST_MAX_MS = 30000; // a test stops by itself after this long unless the laptop asks again
 
 window.tailmic = { stats: {} };
 
@@ -45,7 +58,7 @@ async function api(path, body) {
 }
 
 function report() {
-  const st = { deviceFound: !!(sinkId && sinkApplied), deviceLabel: sinkLabel, state: pc ? pc.connectionState : 'idle' };
+  const st = { deviceFound: !!(sinkId && sinkApplied), deviceLabel: sinkLabel, state: pc ? pc.connectionState : 'idle', testing: !!test, needsPermission: asking };
   const key = JSON.stringify(st);
   if (key === lastReported) return;
   lastReported = key;
@@ -53,19 +66,45 @@ function report() {
 }
 
 // Chrome/Edge only show device names (and real IP addresses for WebRTC) to pages
-// that have microphone permission, so ask once and close the mic right away.
-async function unlock() {
+// that have microphone permission. Start-TailMic gives this TailMic-only browser
+// profile that permission for this page alone, and then nothing needs to be
+// opened: the names are simply there. Only if that did not work (the page then
+// sees no names) does it ask, by opening a microphone and closing it right away.
+const PERMISSION_HELP = 'Click "Allow" when the browser asks (one time only). TailMic uses this to find the Steam Streaming Microphone device, and for "Test what the game hears" when you start that from the laptop. Nothing is stored.';
+let unlocking = null;
+function unlock() {
+  if (!unlocking) unlocking = doUnlock().finally(() => { unlocking = null; });
+  return unlocking;
+}
+
+async function doUnlock() {
   try {
+    if ((await navigator.mediaDevices.enumerateDevices()).some((d) => d.label)) {
+      permOk = true;
+      noInput = false;
+      ui.permRow.classList.add('hidden');
+      return;
+    }
+  } catch { /* ask below */ }
+  try {
+    if (!noInput) { // (not when only re-checking whether an audio device has appeared)
+      asking = true;
+      setStatus('bad', 'Needs permission', PERMISSION_HELP, true);
+      report();
+    }
     const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     s.getTracks().forEach((t) => t.stop());
+    asking = false;
     permOk = true;
     noInput = false;
     ui.permRow.classList.add('hidden');
+    setStatus('warn', 'Starting...');
   } catch (e) {
     permOk = false;
     // No audio input device on this PC: nothing to allow. It also means the Steam
     // Streaming Microphone is not installed, so say that instead of asking for permission.
     noInput = e.name === 'NotFoundError';
+    asking = !noInput; // refused: the "Allow access" button stays until someone allows it
     if (noInput) {
       ui.permRow.classList.add('hidden');
       ui.device.textContent = 'NOT FOUND (this PC has no audio input device)';
@@ -74,7 +113,8 @@ async function unlock() {
       return;
     }
     ui.permRow.classList.remove('hidden');
-    setStatus('bad', 'Needs permission', 'Click "Allow" when the browser asks (one time only). TailMic uses this to find the Steam Streaming Microphone device; it does not record anything on the PC.', true);
+    setStatus('bad', 'Needs permission', PERMISSION_HELP, true);
+    report();
   }
 }
 
@@ -127,7 +167,68 @@ async function findDevice() {
   report();
 }
 
+// ---------- "Test what the game hears" ----------
+// The laptop asks (through the server, which checks the Tailscale user) to hear
+// what a game gets from "Microphone (Steam Streaming Microphone)".
+
+/** Stop listening to the Steam microphone (safe to call when no test runs). */
+function stopTest() {
+  if (!test) return;
+  clearTimeout(test.timer);
+  test.track.onended = null;
+  test.track.stop();
+  returnSender?.replaceTrack(null).catch(() => {});
+  test = null;
+  ui.test.textContent = 'off';
+  report();
+}
+
+async function startTest(d) {
+  const peer = pc;
+  const fail = (error, message) => api('/api/testack', { id: d.id, ok: false, error, message }).catch(() => {});
+  if (!peer || d.id !== sessionId || peer.connectionState !== 'connected' || !returnSender) {
+    return fail('no_call', 'The PC has no connected call to test.');
+  }
+  if (test) {
+    // Already listening (live monitor asking for more time): just run on.
+    clearTimeout(test.timer);
+    test.timer = setTimeout(stopTest, TEST_MAX_MS);
+    return api('/api/testack', { id: d.id, ok: true, device: test.track.label }).catch(() => {});
+  }
+  let track = null;
+  try {
+    // Only the Steam microphone, found by name. Never the default or any other microphone.
+    const want = TEST_MICROPHONE;
+    const dev = (await navigator.mediaDevices.enumerateDevices())
+      .find((x) => x.kind === 'audioinput' && x.deviceId !== 'default' && x.deviceId !== 'communications' && x.label.toLowerCase().includes(want));
+    if (!dev) return fail('no_capture_device', 'The PC cannot find "Microphone (Steam Streaming Microphone)". Is Steam running on the PC?');
+    const s = await navigator.mediaDevices.getUserMedia({
+      audio: { deviceId: { exact: dev.deviceId }, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      video: false,
+    });
+    track = s.getAudioTracks()[0];
+    // Make sure the browser really opened that device.
+    if (!track || !track.label.toLowerCase().includes(want)) throw new Error(`the browser opened "${track ? track.label : 'nothing'}" instead`);
+    if (pc !== peer || d.id !== sessionId || test) throw new Error('the call ended');
+    await returnSender.replaceTrack(track);
+    if (pc !== peer) throw new Error('the call ended');
+    test = { track, timer: setTimeout(stopTest, TEST_MAX_MS) };
+    track.onended = stopTest; // Steam's device disappeared
+    ui.test.textContent = `ON - sending "${track.label}" back to the laptop`;
+    report();
+    // If the laptop gave up or stopped the test meanwhile, the server refuses this
+    // confirmation: stop at once instead of listening until the 30-second limit.
+    const ack = await api('/api/testack', { id: d.id, ok: true, device: track.label }).catch(() => null);
+    if (!ack || !ack.ok) stopTest();
+  } catch (e) {
+    if (test && test.track === track) stopTest();
+    else track?.stop(); // never leave the microphone open after a failed start
+    await fail('test_failed', `The PC could not listen to "Microphone (Steam Streaming Microphone)": ${e.message}`);
+  }
+}
+
 function closePc(reason) {
+  stopTest();
   // Tell the server this call is over, so it doesn't stay listed as active.
   if (sessionId) api('/api/ended', { id: sessionId }).catch(() => {});
   if (pc) {
@@ -136,6 +237,7 @@ function closePc(reason) {
     pc = null;
   }
   sessionId = null;
+  returnSender = null;
   audio.srcObject = null;
   ui.user.textContent = ui.route.textContent = ui.rtt.textContent = ui.buf.textContent = ui.lost.textContent = '-';
   ui.meter.style.width = '0';
@@ -195,6 +297,13 @@ async function onOffer(d) {
   try {
     await peer.setRemoteDescription({ type: 'offer', sdp: d.sdp });
     if (stale()) return;
+    // Offer a way back to the laptop for "Test what the game hears". It carries
+    // no track, so nothing is sent until the laptop starts a test.
+    const tx = peer.getTransceivers().find((t) => t.receiver.track && t.receiver.track.kind === 'audio');
+    if (tx) {
+      tx.direction = 'sendrecv';
+      returnSender = tx.sender;
+    }
     await peer.setLocalDescription(await peer.createAnswer());
     if (stale()) return;
     await waitForIce(peer, 3000);
@@ -281,6 +390,11 @@ function connectEvents() {
     if (d.id === latestOfferId) latestOfferId = null; // don't start a call that was already hung up
     if (d.id === sessionId) closePc(d.reason === 'replaced' ? 'Another device connected.' : 'Your laptop disconnected.');
   });
+  events.addEventListener('test', (e) => {
+    const d = JSON.parse(e.data);
+    if (d.action === 'start') startTest(d).catch(() => {});
+    else if (d.id === sessionId) stopTest();
+  });
   events.addEventListener('open', () => { lastReported = ''; report(); });
   events.addEventListener('error', () => {
     if (events.readyState === EventSource.CONNECTING) setStatus('bad', 'TailMic server stopped', 'Reconnecting... If this stays, run Start-TailMic again on this PC.', true);
@@ -303,10 +417,12 @@ ui.perm.addEventListener('click', async () => {
     await new Promise((r) => setTimeout(r, 2000));
   }
   ui.users.textContent = cfg.allowedUsers.length ? cfg.allowedUsers.join(', ') : 'NONE - run Setup-TailMic';
+  // Connect to the server first, so that `TailMic.cmd status` can say what this window is waiting for.
+  connectEvents();
   await unlock();
   if (permOk) await findDevice();
+  report();
   navigator.mediaDevices.addEventListener('devicechange', () => refreshDevice().catch(() => {}));
-  connectEvents();
   setInterval(() => stats().catch(() => {}), 1000);
   setInterval(() => refreshDevice().catch(() => {}), 10000);
 })();

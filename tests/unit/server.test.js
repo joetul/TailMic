@@ -354,3 +354,161 @@ test('health is readable by local tools; quit only by local tools, never by a we
     assert.equal(quits, 1, 'server shuts down');
   } finally { sse?.destroy(); close(); }
 });
+
+// ---------- "Test what the game hears" ----------
+// A connected call: the fake PC window answers offers and records test requests.
+async function bootWithCall(onTest) {
+  const b = await boot();
+  const tests = [];
+  b.sse = await openSse(b.s.receiverPort, async (ev, d) => {
+    if (ev === 'offer') await b.r('/api/answer', { method: 'POST', body: { id: d.id, sdp: ANSWER('100.100.9.9') } });
+    if (ev === 'test') { tests.push(d); await onTest?.(d); }
+  });
+  await b.r('/api/rstatus', { method: 'POST', body: { deviceFound: true } });
+  const res = await b.c('/api/offer', { method: 'POST', body: { sdp: OFFER_SDP } });
+  assert.equal(res.status, 200);
+  return { ...b, id: res.json.id, tests, close: () => { b.sse.destroy(); b.close(); } };
+}
+
+test('test: only the allowed user, and only for their own connected call', async () => {
+  const b = await bootWithCall();
+  try {
+    const start = { id: b.id, action: 'start' };
+    assert.equal((await req(b.s.clientPort, '/api/test', { method: 'POST', body: start })).status, 403, 'no Tailscale identity');
+    assert.equal((await b.c('/api/test', { method: 'POST', body: start, headers: { 'Tailscale-User-Login': 'evil@example.com' } })).status, 403);
+    assert.equal((await b.c('/api/test', { method: 'POST', body: start, headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
+    assert.equal((await b.c('/api/test', { method: 'POST', body: { id: 'not-my-call', action: 'start' } })).status, 409);
+    assert.equal((await b.c('/api/test', { method: 'POST', body: { id: b.id, action: 'record-forever' } })).status, 400);
+    assert.equal(b.tests.length, 0, 'none of these reached the PC window');
+    // A web page on the PC cannot fake the PC window's confirmation either.
+    assert.equal((await b.r('/api/testack', { method: 'POST', body: { id: b.id, ok: true }, headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
+    assert.equal((await b.r('/api/testack', { method: 'POST', body: { id: b.id, ok: true } })).status, 410, 'no test was asked for');
+  } finally { b.close(); }
+});
+
+test('test: no call, no test', async () => {
+  const { c, close } = await boot();
+  try {
+    const res = await c('/api/test', { method: 'POST', body: { id: 'x', action: 'start' } });
+    assert.equal(res.status, 409);
+    assert.equal(res.json.error, 'no_call');
+  } finally { close(); }
+});
+
+test('test: start waits for the PC window, stop is passed on, and health shows it', async () => {
+  let b;
+  b = await bootWithCall(async (d) => {
+    if (d.action !== 'start') return;
+    await b.r('/api/rstatus', { method: 'POST', body: { deviceFound: true, testing: true } });
+    await b.r('/api/testack', { method: 'POST', body: { id: d.id, ok: true, device: 'Microphone (Steam Streaming Microphone)' } });
+  });
+  try {
+    const res = await b.c('/api/test', { method: 'POST', body: { id: b.id, action: 'start' } });
+    assert.equal(res.status, 200, JSON.stringify(res.json));
+    assert.equal(res.json.device, 'Microphone (Steam Streaming Microphone)');
+    assert.deepEqual(b.tests, [{ id: b.id, action: 'start' }]);
+    assert.equal((await b.r('/api/health')).json.test, true, 'status shows that the laptop is listening');
+    assert.equal((await b.c('/api/test', { method: 'POST', body: { id: b.id, action: 'stop' } })).status, 200);
+    await wait(50);
+    assert.deepEqual(b.tests[1], { id: b.id, action: 'stop' });
+  } finally { b.close(); }
+});
+
+test('test: a PC that cannot open the Steam microphone gives a clear error and is told to stop', async () => {
+  let b;
+  b = await bootWithCall(async (d) => {
+    if (d.action === 'start') await b.r('/api/testack', { method: 'POST', body: { id: d.id, ok: false, error: 'no_capture_device', message: 'The PC cannot find it.' } });
+  });
+  try {
+    const res = await b.c('/api/test', { method: 'POST', body: { id: b.id, action: 'start' } });
+    assert.equal(res.status, 502);
+    assert.equal(res.json.error, 'no_capture_device');
+    assert.equal(res.json.message, 'The PC cannot find it.');
+    await wait(50);
+    assert.deepEqual(b.tests.map((t) => t.action), ['start', 'stop'], 'never left listening after a failed start');
+  } finally { b.close(); }
+});
+
+// ---------- audit fixes ----------
+test('with two allowed users, one cannot hang up or test the other\'s call', async () => {
+  const OTHER = 'other@example.com';
+  const b = await boot({ allowedUsers: [USER, OTHER] });
+  const events = [];
+  let sse;
+  try {
+    sse = await openSse(b.s.receiverPort, async (ev, d) => {
+      events.push(ev);
+      if (ev === 'offer') await b.r('/api/answer', { method: 'POST', body: { id: d.id, sdp: ANSWER('100.100.9.9') } });
+    });
+    await b.r('/api/rstatus', { method: 'POST', body: { deviceFound: true } });
+    const call = await b.c('/api/offer', { method: 'POST', body: { sdp: OFFER_SDP } });
+    assert.equal(call.status, 200);
+    const asOther = { 'Tailscale-User-Login': OTHER };
+    assert.equal((await b.c('/api/config', { headers: asOther })).json.activeSession, call.json.id, 'the other user can see that a call is up');
+    await b.c('/api/hangup', { method: 'POST', body: { id: call.json.id }, headers: asOther });
+    assert.equal((await b.c('/api/config')).json.activeSession, call.json.id, 'the call is still up');
+    assert.equal((await b.c('/api/test', { method: 'POST', body: { id: call.json.id, action: 'start' }, headers: asOther })).status, 409);
+    await wait(50);
+    assert.ok(!events.includes('hangup') && !events.includes('test'), 'the PC window was told nothing');
+    assert.equal((await b.c('/api/hangup', { method: 'POST', body: { id: call.json.id } })).status, 200);
+    assert.equal((await b.c('/api/config')).json.activeSession, null, 'the owner can hang up');
+  } finally { sse?.destroy(); b.close(); }
+});
+
+test('version and fingerprint: the running server and `server.js --build` agree', async () => {
+  const fs = await import('node:fs');
+  const { execFileSync } = await import('node:child_process');
+  const { buildInfo } = await import('../../app/server.js');
+  const info = buildInfo();
+  assert.equal(info.version, JSON.parse(fs.readFileSync(new URL('../../app/package.json', import.meta.url), 'utf8')).version);
+  assert.match(info.id, /^[0-9a-f]{12}$/);
+  assert.deepEqual(buildInfo(), info, 'the same files give the same fingerprint');
+  const { r, close } = await boot();
+  try {
+    const h = (await r('/api/health')).json;
+    assert.equal(h.version, info.version);
+    assert.equal(h.build, info.id);
+    assert.ok(h.appDir.endsWith('app'), h.appDir);
+  } finally { close(); }
+  // What `TailMic.cmd status` runs to learn which version the files on disk are.
+  const out = execFileSync(process.execPath, [new URL('../../app/server.js', import.meta.url).pathname, '--build'], { encoding: 'utf8' });
+  assert.equal(out, `${info.version} ${info.id}\n`);
+});
+
+test('receiver side: a request that names another site as its origin is refused, even without Sec-Fetch-Site', async () => {
+  const { s, r, close } = await boot();
+  try {
+    const own = `http://127.0.0.1:${s.receiverPort}`;
+    assert.equal((await r('/api/rstatus', { method: 'POST', body: { deviceFound: true }, headers: { Origin: own } })).status, 200, 'the page itself');
+    assert.equal((await r('/api/rconfig')).status, 200, 'local tools send no Origin');
+    for (const origin of ['https://evil.example', `http://127.0.0.1:${s.receiverPort + 1}`, `http://localhost:${s.receiverPort}`, 'null']) {
+      assert.equal((await r('/api/events', { headers: { Origin: origin } })).status, 403, `events from ${origin}`);
+      assert.equal((await r('/api/quit', { method: 'POST', body: {}, headers: { Origin: origin } })).status, 403, `quit from ${origin}`);
+    }
+    assert.equal(s.state.receiver, null, 'nobody became the receiver');
+    const page = await r('/', { headers: { 'Sec-Fetch-Site': 'none' } });
+    assert.equal(page.headers['cross-origin-resource-policy'], 'same-origin');
+  } finally { close(); }
+});
+
+test('the PC window reporting that it waits for permission shows up in health', async () => {
+  const { s, r, close } = await boot();
+  let sse;
+  try {
+    sse = await openSse(s.receiverPort, () => {});
+    await r('/api/rstatus', { method: 'POST', body: { deviceFound: false, needsPermission: true } });
+    assert.equal((await r('/api/health')).json.needsPermission, true);
+    await r('/api/rstatus', { method: 'POST', body: { deviceFound: true } });
+    assert.equal((await r('/api/health')).json.needsPermission, false);
+  } finally { sse?.destroy(); close(); }
+});
+
+test('which microphone a test listens to is not a setting: the PC window is never told one', async () => {
+  const { r, close } = await boot({ captureDeviceMatch: 'Webcam Microphone' }); // a setting from an earlier version, or someone trying
+  try {
+    const cfg = (await r('/api/rconfig')).json;
+    assert.equal(cfg.outputDeviceMatch, 'Steam Streaming Microphone');
+    assert.ok(!JSON.stringify(cfg).includes('Webcam'), 'the setting is not passed on');
+    assert.ok(!('captureDeviceMatch' in loadConfig()), 'and it is not a known setting');
+  } finally { close(); }
+});

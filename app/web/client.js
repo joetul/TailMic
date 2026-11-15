@@ -1,11 +1,13 @@
 // TailMic client (runs in Chrome on the Mac / laptop).
 import { filterCandidates, mungeOpus, selectedPair, isAllowedAddress, isAllowedEndpoint } from './sdp.js';
+import { TONE_HZ, peakFrequency, classifyTone } from './tone.js';
 
 const $ = (id) => document.getElementById(id);
 const ui = {
   status: $('status'), statusText: $('statusText'), msg: $('msg'), meter: $('meter'),
   mic: $('mic'), permMsg: $('permMsg'), ns: $('ns'), snd: $('snd'), connect: $('connect'), mute: $('mute'),
   who: $('who'), pc: $('pc'), route: $('route'), rtt: $('rtt'), rate: $('rate'), codec: $('codec'), proc: $('proc'),
+  testRec: $('testRec'), testTone: $('testTone'), testLive: $('testLive'), testMsg: $('testMsg'), monitor: $('monitor'),
 };
 
 let cfg = null;
@@ -20,6 +22,9 @@ let audioCtx = null;
 let meterRaf = 0;
 let last = null; // {bytes, packets, t}
 let usingFallbackMic = false; // the chosen mic was unavailable, so the system default is in use
+let micSender = null;   // sends the microphone (or, during a tone check, the test tone) to the PC
+let returnTrack = null; // audio coming back from the PC: silent, except during "Test what the game hears"
+let test = null;        // the running test, see runTest()
 
 // Every connection attempt gets a number. Anything an older attempt finishes
 // after you clicked Disconnect (or after a newer attempt started) is thrown
@@ -27,7 +32,7 @@ let usingFallbackMic = false; // the chosen mic was unavailable, so the system d
 let attempt = 0;
 
 // Exposed for automated tests / curious users (read-only use).
-window.tailmic = { stats: {}, sounds: [] };
+window.tailmic = { stats: {}, sounds: [], test: null };
 
 function setStatus(kind, text, msg = '', isErr = false) {
   ui.status.dataset.s = kind;
@@ -240,6 +245,9 @@ function stopStream(s) {
 }
 
 function cleanup() {
+  abortTest();
+  micSender = null;
+  returnTrack = null;
   clearInterval(statsTimer); statsTimer = null;
   clearTimeout(discTimer); discTimer = null;
   stopMeter();
@@ -251,6 +259,7 @@ function cleanup() {
   ui.mute.disabled = true;
   ui.mute.setAttribute('aria-pressed', 'false');
   ui.mute.textContent = 'Mute';
+  renderTest();
 }
 
 function scheduleRetry(why) {
@@ -292,7 +301,10 @@ async function connect() {
 
     myPc = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require' });
     pc = myPc;
-    const tr = myPc.addTransceiver(track, { direction: 'sendonly', streams: [stream] });
+    // 'sendrecv': the way back stays silent until you run "Test what the game hears".
+    const tr = myPc.addTransceiver(track, { direction: 'sendrecv', streams: [stream] });
+    micSender = tr.sender;
+    myPc.ontrack = (ev) => { if (pc === myPc) { returnTrack = ev.track; renderTest(); } };
     try {
       const caps = RTCRtpReceiver.getCapabilities('audio');
       const opus = caps.codecs.filter((x) => x.mimeType.toLowerCase() === 'audio/opus');
@@ -334,7 +346,7 @@ async function connect() {
   } catch (e) {
     if (e instanceof Abandoned) {
       // Only release what this attempt opened; a newer attempt owns the globals.
-      if (myPc && pc !== myPc) { myPc.onconnectionstatechange = null; myPc.close(); }
+      if (myPc && pc !== myPc) { myPc.onconnectionstatechange = null; myPc.ontrack = null; myPc.close(); }
       if (myStream && stream !== myStream) stopStream(myStream);
       if (my === attempt) cleanup(); // cancelled by Disconnect
       return;
@@ -355,6 +367,7 @@ async function connect() {
 function onConnState() {
   if (!pc) return;
   const st = pc.connectionState;
+  renderTest();
   if (st === 'connected') {
     clearTimeout(discTimer);
     if (!up) { up = true; pcOk = true; playSound('up'); }
@@ -444,6 +457,213 @@ function stop(sendHangup) {
   ui.connect.classList.add('primary');
   setStatus('idle', 'Not connected');
 }
+
+// ---------- "Test what the game hears" ----------
+// The PC sends back, over the same connection, what a game gets from
+// "Microphone (Steam Streaming Microphone)". Three ways to use it:
+//   rec  - record 5 seconds, then play them back (no feedback loop)
+//   tone - send a steady tone instead of the microphone and measure the pitch
+//          that comes back: a wrong pitch means the Steam device is set up wrong
+//   live - hear it continuously (headphones needed)
+// The PC only listens while a test runs; it stops by itself after 30 seconds.
+const TEST_RECORD_S = 5;
+const FORMAT_FIX = 'Fix on the PC: Settings → System → Sound → More sound settings → Recording tab → "Microphone (Steam Streaming Microphone)" → Properties → Advanced. '
+  + 'Set Default Format to exactly what "TailMic.cmd status" prints for the Speakers half, for example "2 channel, 32 bit, 48000 Hz" (channels, bits and Hz must all match). Then restart TailMic and the game.';
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function setTestMsg(text, kind = '') {
+  ui.testMsg.textContent = text;
+  ui.testMsg.classList.toggle('err', kind === 'bad');
+  ui.testMsg.classList.toggle('good', kind === 'ok');
+}
+
+function renderTest() {
+  const can = !!(pc && pc.connectionState === 'connected' && returnTrack && sessionId);
+  const live = !!test && test.kind === 'live';
+  ui.testRec.disabled = ui.testTone.disabled = !can || !!test;
+  ui.testLive.disabled = !can || (!!test && !live);
+  ui.testLive.setAttribute('aria-pressed', String(live));
+  ui.testLive.textContent = live ? 'Stop listening' : 'Listen live';
+  // A tone check sends the tone in place of the microphone, so don't switch microphones meanwhile.
+  ui.mic.disabled = ui.ns.disabled = !!test && test.kind === 'tone';
+  if (!can && !test && !ui.testMsg.classList.contains('err') && !ui.testMsg.classList.contains('good')) setTestMsg('Connect first.');
+  else if (can && !test && ui.testMsg.textContent === 'Connect first.') setTestMsg('Ready. "Tone check" tells you in a few seconds whether speed and pitch are right.');
+}
+
+/** What a tone check result means, in plain words. Returns [text, 'ok' | 'bad']. */
+function toneMessage({ verdict, hz }) {
+  const came = `The ${TONE_HZ} Hz test tone came back as ${hz} Hz`;
+  switch (verdict) {
+    case 'ok':
+      return [`Tone check passed: the game hears the right speed and pitch (${hz} Hz for a ${TONE_HZ} Hz tone).`, 'ok'];
+    case 'half':
+      return [`${came}: the game hears you at HALF speed, slow and deep. The two halves of the Steam Streaming Microphone use a different number of channels (Speakers 2 channel, Microphone 1 channel). ${FORMAT_FIX}`, 'bad'];
+    case 'double':
+      return [`${came}: the game hears you at DOUBLE speed, fast and high. The two halves of the Steam Streaming Microphone use a different number of channels (Speakers 1 channel, Microphone 2 channel). ${FORMAT_FIX}`, 'bad'];
+    case 'rate_low':
+      return [`${came}: the game hears you about 8% too slow and low, with crackle. The two halves of the Steam Streaming Microphone use different sample rates (Speakers 48000 Hz, Microphone 44100 Hz). ${FORMAT_FIX}`, 'bad'];
+    case 'rate_high':
+      return [`${came}: the game hears you about 9% too fast and high, with crackle. The two halves of the Steam Streaming Microphone use different sample rates (Speakers 44100 Hz, Microphone 48000 Hz). ${FORMAT_FIX}`, 'bad'];
+    case 'silent':
+      return ['Nothing came back: the PC plays your sound, but "Microphone (Steam Streaming Microphone)" stays silent. On the PC, check under Settings → System → Sound that both Steam Streaming Microphone devices are enabled and not muted, then run "TailMic.cmd status".', 'bad'];
+    default:
+      return [`${came}, which is wrong: the game does not hear you correctly. The two halves of the Steam Streaming Microphone probably use different formats. ${FORMAT_FIX}`, 'bad'];
+  }
+}
+
+/** Tell the PC to stop listening (once per test). */
+function stopPcCapture(t) {
+  if (t.pcStopped) return Promise.resolve();
+  t.pcStopped = true;
+  if (!sessionId || sessionId !== t.id) return Promise.resolve(); // the call is gone, and the PC stopped with it
+  return api('/api/test', { method: 'POST', body: { id: t.id, action: 'stop' } }).catch(() => {});
+}
+
+/** End the running test from outside (call dropped, Disconnect clicked). */
+function abortTest() {
+  if (!test) return;
+  test.aborted = true;
+  test.stop?.();
+}
+
+async function testRecord(t, back) {
+  const rec = new MediaRecorder(back);
+  const chunks = [];
+  rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  const stopped = new Promise((r) => { rec.onstop = r; });
+  t.cleanup.push(() => { if (rec.state !== 'inactive') rec.stop(); });
+  rec.start();
+  for (let left = TEST_RECORD_S; left > 0; left--) {
+    setTestMsg(`Recording what the game hears. Talk now... ${left}`);
+    await sleep(1000);
+    t.check();
+  }
+  rec.stop();
+  await stopped;
+  await stopPcCapture(t);
+  // Kept in memory only, and gone when it has been played.
+  let buf;
+  try {
+    buf = await soundCtx.decodeAudioData(await new Blob(chunks, { type: rec.mimeType }).arrayBuffer());
+  } catch {
+    throw new TailMicError('The recording came out empty or unreadable. Try again.', 'bad_recording');
+  }
+  t.check();
+  let peak = 0;
+  for (const v of buf.getChannelData(0)) peak = Math.max(peak, Math.abs(v));
+  window.tailmic.test = { kind: 'rec', seconds: buf.duration, peak };
+  if (peak < 0.002) {
+    const muted = ui.mute.getAttribute('aria-pressed') === 'true';
+    setTestMsg(muted ? 'The recording is silent, because you are muted. Click Unmute and try again.'
+      : 'The recording is silent: nothing reached "Microphone (Steam Streaming Microphone)" on the PC. Does the meter above move when you talk? If it does, run "Tone check".', 'bad');
+    return;
+  }
+  setTestMsg('Playing back what the game heard...');
+  const src = soundCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(soundCtx.destination);
+  const ended = new Promise((r) => { src.onended = r; t.stop = r; });
+  t.cleanup.push(() => { try { src.stop(); } catch { /* already stopped */ } });
+  src.start();
+  await ended;
+  t.check();
+  setTestMsg('That is what the game hears. If your voice was slow, deep or distorted, run "Tone check" to find out why.', 'ok');
+}
+
+async function testTone(t, back) {
+  const sender = micSender;
+  const osc = soundCtx.createOscillator();
+  const gain = soundCtx.createGain();
+  const out = soundCtx.createMediaStreamDestination();
+  osc.frequency.value = TONE_HZ;
+  gain.gain.value = 0.25;
+  osc.connect(gain).connect(out);
+  const src = soundCtx.createMediaStreamSource(back);
+  const an = soundCtx.createAnalyser();
+  an.fftSize = 16384; // about 3 Hz per step at 48 kHz
+  an.smoothingTimeConstant = 0;
+  src.connect(an);
+  t.cleanup.push(() => {
+    // Put the microphone back (whichever is current, muted or not).
+    if (micSender === sender) sender.replaceTrack(stream ? stream.getAudioTracks()[0] || null : null).catch(() => {});
+    try { osc.stop(); } catch { /* not started */ }
+    src.disconnect();
+    out.stream.getTracks().forEach((x) => x.stop());
+  });
+  osc.start();
+  await sender.replaceTrack(out.stream.getAudioTracks()[0]);
+  t.check();
+  setTestMsg('Sending a test tone through the PC. The game hears a beep for about 3 seconds...');
+  await sleep(1200); // let the tone travel to the PC and back
+  const spectrum = new Float32Array(an.frequencyBinCount);
+  const seen = [];
+  for (let i = 0; i < 20; i++) {
+    t.check();
+    an.getFloatFrequencyData(spectrum);
+    seen.push(peakFrequency(spectrum, soundCtx.sampleRate, an.fftSize));
+    await sleep(100);
+  }
+  t.check();
+  const result = classifyTone(seen);
+  window.tailmic.test = { kind: 'tone', ...result };
+  setTestMsg(...toneMessage(result));
+}
+
+async function testLive(t) {
+  ui.monitor.muted = false;
+  setTestMsg('Live: you hear what the game hears, a moment later. Use headphones, or it will echo. Click "Stop listening" when you are done.');
+  // The PC stops listening by itself after 30 seconds; ask for more time while this runs.
+  const renew = setInterval(() => {
+    api('/api/test', { method: 'POST', body: { id: t.id, action: 'start' } }).catch(() => t.stop?.());
+  }, 15000);
+  t.cleanup.push(() => clearInterval(renew));
+  await new Promise((r) => { t.stop = r; });
+  t.check();
+  setTestMsg('Stopped listening.');
+}
+
+async function runTest(kind) {
+  if (test) {
+    if (test.kind === 'live' && kind === 'live') test.stop?.(); // "Stop listening"
+    return;
+  }
+  armSounds();
+  if (!pc || pc.connectionState !== 'connected' || !returnTrack || !sessionId) return;
+  const t = { kind, id: sessionId, aborted: false, pcStopped: false, cleanup: [], stop: null };
+  t.check = () => { if (t.aborted || test !== t) throw new Abandoned(); };
+  test = t;
+  window.tailmic.test = null;
+  renderTest();
+  try {
+    if (!soundCtx) throw new TailMicError('This browser cannot play sound on this page.', 'no_audio');
+    setTestMsg('Asking the PC to listen to "Microphone (Steam Streaming Microphone)"...');
+    await api('/api/test', { method: 'POST', body: { id: t.id, action: 'start' } });
+    t.check();
+    const back = new MediaStream([returnTrack]);
+    // Attached to a (silent) player as well: Chrome only delivers incoming call audio to a page that plays it.
+    ui.monitor.muted = true;
+    ui.monitor.srcObject = back;
+    await ui.monitor.play().catch(() => {});
+    t.check();
+    if (kind === 'rec') await testRecord(t, back);
+    else if (kind === 'tone') await testTone(t, back);
+    else await testLive(t);
+  } catch (e) {
+    if (e instanceof Abandoned) setTestMsg('The test was stopped.');
+    else setTestMsg(e.message || String(e), 'bad');
+  } finally {
+    for (const f of t.cleanup.reverse()) { try { f(); } catch { /* keep cleaning up */ } }
+    ui.monitor.pause();
+    ui.monitor.srcObject = null;
+    stopPcCapture(t);
+    if (test === t) test = null;
+    renderTest();
+  }
+}
+
+ui.testRec.addEventListener('click', () => runTest('rec'));
+ui.testTone.addEventListener('click', () => runTest('tone'));
+ui.testLive.addEventListener('click', () => runTest('live'));
 
 function renderPc() {
   if (!cfg) return;

@@ -34,6 +34,18 @@
   </section>
 
   <section class="card">
+    <h2 class="label" id="testTitle">Test what the game hears</h2>
+    <p class="msg">Listen, on this computer, to what a game on the PC gets from "Microphone (Steam Streaming Microphone)". Use headphones.</p>
+    <div class="row" role="group" aria-labelledby="testTitle">
+      <button id="testRec" disabled>Record 5 s and play back</button>
+      <button id="testTone" disabled>Tone check</button>
+      <button id="testLive" aria-pressed="false" disabled>Listen live</button>
+    </div>
+    <p class="msg" id="testMsg" role="status">Connect first.</p>
+    <audio id="monitor"></audio>
+  </section>
+
+  <section class="card">
     <dl>
       <dt>PC</dt><dd id="pc">-</dd>
       <dt>Route</dt><dd id="route">-</dd>

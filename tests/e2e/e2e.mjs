@@ -35,14 +35,60 @@ const PROBES = () => {
   const md = navigator.mediaDevices;
   if (md) {
     const gum = md.getUserMedia.bind(md);
+    // Stand-in for Steam's device, which headless Chromium does not have: what is
+    // played into the "Speakers" half comes out of the "Microphone" half. With
+    // window.__loop = 1 it comes out unchanged; 0.5 plays it at half speed (what a
+    // 2-channel/1-channel mismatch does), 44100/48000 slightly slow (a sample-rate
+    // mismatch), and 0 gives silence.
+    const loopback = async (deviceId) => {
+      const dev = (await md.enumerateDevices()).find((d) => d.deviceId === deviceId);
+      const speed = window.__loop;
+      const ctx = new AudioContext();
+      const src = ctx.createMediaStreamSource(document.getElementById('audio').srcObject);
+      const sp = ctx.createScriptProcessor(2048, 1, 1);
+      const ring = new Float32Array(ctx.sampleRate * 60);
+      let w = 0;
+      let r = 0;
+      sp.onaudioprocess = (e) => {
+        const inp = e.inputBuffer.getChannelData(0);
+        const out = e.outputBuffer.getChannelData(0);
+        for (let i = 0; i < inp.length; i++) ring[w++ % ring.length] = inp[i];
+        for (let i = 0; i < out.length; i++) {
+          const k = Math.floor(r);
+          if (speed > 0 && k + 1 < w) {
+            out[i] = ring[k % ring.length] * (1 - (r - k)) + ring[(k + 1) % ring.length] * (r - k);
+            r += speed;
+          } else out[i] = 0;
+        }
+      };
+      const dst = ctx.createMediaStreamDestination();
+      const quiet = ctx.createGain();
+      quiet.gain.value = 0;
+      src.connect(sp);
+      sp.connect(dst);
+      sp.connect(quiet).connect(ctx.destination); // keeps the processor running
+      Object.defineProperty(dst.stream.getAudioTracks()[0], 'label', { value: dev ? dev.label : '' });
+      return dst.stream;
+    };
     md.getUserMedia = async (c) => {
       if (window.__gumDelay) await new Promise((r) => setTimeout(r, window.__gumDelay));
-      const st = await gum(c);
+      const viaLoop = window.__loop !== undefined && c && c.audio && c.audio.deviceId;
+      const st = viaLoop ? await loopback(c.audio.deviceId.exact) : await gum(c);
+      const asked = c && c.audio && c.audio.deviceId && c.audio.deviceId.exact;
+      if (asked && !viaLoop && (await md.enumerateDevices()).some((d) => d.deviceId === asked && d.label === STEAM_MIC)) {
+        Object.defineProperty(st.getAudioTracks()[0], 'label', { value: STEAM_MIC });
+      }
       window.__streams.push(st);
       return st;
     };
+    // With window.__steamMic, one of Chromium's fake microphones carries the name of
+    // Steam's (the page finds that device by name, and the name is not a setting).
+    const STEAM_MIC = 'Microphone (Steam Streaming Microphone)';
+    const poses = (d) => window.__steamMic && d.kind === 'audioinput' && d.label === 'Fake Audio Input 1';
     const enumerate = md.enumerateDevices.bind(md);
-    md.enumerateDevices = async () => (await enumerate()).filter((d) => !(window.__hideOutputs && d.kind === 'audiooutput'));
+    md.enumerateDevices = async () => (await enumerate())
+      .filter((d) => !(window.__hideOutputs && d.kind === 'audiooutput'))
+      .map((d) => (poses(d) ? { deviceId: d.deviceId, groupId: d.groupId, kind: d.kind, label: STEAM_MIC } : d));
   }
   const Orig = window.RTCPeerConnection;
   window.RTCPeerConnection = class extends Orig { constructor(...a) { super(...a); window.__pcs.push(this); } };
@@ -50,7 +96,15 @@ const PROBES = () => {
   window.__openPcs = () => window.__pcs.filter((x) => x.connectionState !== 'closed' && x.signalingState !== 'closed').length;
 };
 
-async function run(name, cfgOverrides, body, { beforeReceiver } = {}) {
+// The file Start-TailMic writes into the TailMic-only browser profile on the PC: it
+// allows ONE site (TailMic's own page) to use audio devices without asking.
+const profileSeed = (origin) => fs.readFileSync(path.join(ROOT, 'scripts/receiver-preferences.json'), 'utf8').trim().replace('{ORIGIN}', origin);
+
+// realProfile: run the PC window the way Start-TailMic does - its own browser
+// profile, prepared for `realProfile(cfg)` (a site), no switch that accepts every
+// permission request, and the page's real security policy.
+// steamMic: the PC has a "Microphone (Steam Streaming Microphone)" (see the probes).
+async function run(name, cfgOverrides, body, { beforeReceiver, realProfile, steamMic } = {}) {
   const cfg = { clientPort: 18470, receiverPort: 18471, allowedUsers: [USER], ...cfgOverrides };
   const srv = startServer(cfg);
   await sleep(500);
@@ -58,10 +112,22 @@ async function run(name, cfgOverrides, body, { beforeReceiver } = {}) {
     channel: 'chromium', // full Chromium in new headless mode
     args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required'],
   });
+  let rctx = null;
   try {
-    const rctx = await browser.newContext({ bypassCSP: true }); // lets the test runner evaluate its probes
-    await rctx.grantPermissions(['microphone']);
+    if (realProfile) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tailmic-profile-'));
+      fs.mkdirSync(path.join(dir, 'Default'));
+      fs.writeFileSync(path.join(dir, 'Default', 'Preferences'), profileSeed(realProfile(cfg)));
+      rctx = await chromium.launchPersistentContext(dir, {
+        channel: 'chromium',
+        args: ['--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required', '--no-first-run'],
+      });
+    } else {
+      rctx = await browser.newContext({ bypassCSP: true }); // lets the test runner evaluate its probes
+      await rctx.grantPermissions(['microphone']);
+    }
     await rctx.addInitScript(PROBES);
+    if (steamMic) await rctx.addInitScript(() => { window.__steamMic = true; });
     if (beforeReceiver) await beforeReceiver(rctx);
     const receiver = await rctx.newPage();
     receiver.on('console', (m) => m.type() === 'error' && console.log('[receiver]', m.text()));
@@ -80,6 +146,7 @@ async function run(name, cfgOverrides, body, { beforeReceiver } = {}) {
     console.log('--- server log ---\n' + srv.logs.join(''));
     process.exitCode = 1;
   } finally {
+    if (realProfile) await rctx?.close();
     await browser.close();
     srv.stop();
     await sleep(300);
@@ -103,10 +170,11 @@ await run('audio flows end to end (Opus mono 10 ms), processing off, then noise 
   await waitFor(client, () => window.tailmic.stats.connectionState === 'connected');
   await waitFor(receiver, () => (window.tailmic.stats.packetsReceived || 0) > 50);
   await sleep(1500);
-  const a = await client.evaluate(() => ({ ...window.tailmic.stats }));
-  await sleep(3000);
-  const b = await client.evaluate(() => ({ ...window.tailmic.stats }));
-  const avgPps = ((b.packetsSent - a.packetsSent) * 1000) / (b.t - a.t);
+  // The page works out packets/s once a second. Its counters can lag for a moment and then
+  // catch up (one reading of 70, the next of 130), so take the middle one of several readings.
+  const readings = [];
+  for (let i = 0; i < 7; i++) { await sleep(1000); readings.push(await client.evaluate(() => window.tailmic.stats.pps || 0)); }
+  const avgPps = readings.sort((x, y) => x - y)[3];
   let maxLevel = 0;
   for (let i = 0; i < 8; i++) {
     maxLevel = Math.max(maxLevel, await receiver.evaluate(() => window.tailmic.stats.audioLevel || 0));
@@ -272,7 +340,7 @@ await run('bug 5: unplugging the mic mid-call switches mics without hanging up',
   await waitFor(client, (n) => window.__streams.length > n && window.__liveTracks() === 1, before);
   await sleep(1500);
   const p1 = await receiver.evaluate(() => window.tailmic.stats.packetsReceived);
-  await sleep(1500);
+  await sleep(2500); // the PC page counts packets once a second: wait for at least two counts
   const p2 = await receiver.evaluate(() => window.tailmic.stats.packetsReceived);
   const st = await client.evaluate(() => window.tailmic.stats.connectionState);
   console.log('  after unplug: state', st, 'packets', p1, '->', p2, 'offers:', offers(srv));
@@ -356,7 +424,7 @@ await run('stop over SSH: the PC window closes itself and the server exits', { a
   const q = await fetch(`${base}/api/quit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"confirm":true}' }); // what stop.ps1 sends
   assert.equal(q.status, 200);
   await closed;
-  await sleep(1500);
+  for (let i = 0; i < 50 && srv.p.exitCode === null; i++) await sleep(100); // the server exits about 1.7 s after it was asked
   console.log('  PC window closed itself; server exit code:', srv.p.exitCode, '| Mac status:', await client.evaluate(() => window.tailmic.status));
   assert.equal(srv.p.exitCode, 0, 'server exited cleanly');
 });
@@ -374,6 +442,219 @@ await run('two PC windows do not fight over the connection', { allowedCidrs: LAB
   assert.equal(n, 2, 'no ping-pong between windows');
   assert.equal(await second.evaluate(() => window.tailmic.status), 'Ready');
 });
+
+// ---------- "Test what the game hears" ----------
+// Headless Chromium has no Steam device; with WITH_STEAM_MIC one of its fake microphones stands in for the capture half.
+const TEST_CFG = { allowedCidrs: LAB_CIDRS, outputDeviceMatch: FAKE_OUTPUT };
+const WITH_STEAM_MIC = { steamMic: true };
+const testDone = (page, kind) => waitFor(page, (k) => window.tailmic.test && window.tailmic.test.kind === k, kind, 30000);
+const pcListening = (receiver) => receiver.evaluate(() => ({ live: window.__liveTracks(), row: document.getElementById('test').textContent }));
+const health = async (cfg) => (await fetch(`http://127.0.0.1:${cfg.receiverPort}/api/health`)).json();
+
+await run('test what the game hears: record and play back; the PC listens only during the test', TEST_CFG, async (t) => {
+  const { receiver, client, cfg, srv } = t;
+  await ready(t);
+  assert.equal(await client.isDisabled('#testRec'), true, 'no test without a call');
+  await client.click('#connect');
+  await connected(client);
+  await waitFor(client, () => !document.getElementById('testRec').disabled);
+  assert.deepEqual(await pcListening(receiver), { live: 0, row: 'off' }, 'the PC does not listen during a normal call');
+  const sentBefore = await receiver.evaluate(async () => {
+    let n = 0;
+    (await window.__pcs[window.__pcs.length - 1].getStats()).forEach((s) => { if (s.type === 'outbound-rtp') n += s.packetsSent || 0; });
+    return n;
+  });
+  assert.equal(sentBefore, 0, 'nothing is sent back to the laptop outside a test');
+
+  await client.click('#testRec');
+  await waitFor(receiver, () => window.__liveTracks() === 1);
+  const during = await pcListening(receiver);
+  assert.equal(during.row, 'ON - sending "Microphone (Steam Streaming Microphone)" back to the laptop', 'the PC window shows that it is listening, and to what');
+  assert.equal((await health(cfg)).test, true, 'status shows it too');
+  await testDone(client, 'rec');
+  const rec = await client.evaluate(() => window.tailmic.test);
+  await waitFor(client, () => /That is what the game hears/.test(document.getElementById('testMsg').textContent), null, 15000);
+  console.log('  recording:', JSON.stringify(rec), '| PC during:', JSON.stringify(during));
+  assert.ok(rec.seconds > 4 && rec.seconds < 6.5, `about 5 s recorded, got ${rec.seconds}`);
+  assert.ok(rec.peak > 0.002, 'the audio that came back is not silent');
+  await waitFor(receiver, () => window.__liveTracks() === 0);
+  assert.deepEqual(await pcListening(receiver), { live: 0, row: 'off' }, 'the PC stopped listening when the test ended');
+  await waitFor(client, () => !document.getElementById('testRec').disabled);
+  assert.equal((await health(cfg)).test, false);
+  assert.equal(await client.evaluate(() => window.tailmic.stats.connectionState), 'connected', 'the call stayed up');
+  assert.match(srv.logs.join(''), /test: test@example\.com listens to what the game hears/, 'the test is logged');
+}, WITH_STEAM_MIC);
+
+await run('test what the game hears: the tone check tells right from wrong device formats', TEST_CFG, async (t) => {
+  const { receiver, client } = t;
+  await ready(t);
+  await client.click('#connect');
+  await connected(client);
+  await waitFor(client, () => !document.getElementById('testTone').disabled);
+  const check = async (speed) => {
+    await receiver.evaluate((x) => { window.__loop = x; }, speed);
+    await client.click('#testTone');
+    await testDone(client, 'tone');
+    const res = await client.evaluate(() => ({ ...window.tailmic.test, msg: document.getElementById('testMsg').textContent, cls: document.getElementById('testMsg').className }));
+    await waitFor(client, () => !document.getElementById('testTone').disabled);
+    await waitFor(receiver, () => window.__liveTracks() === 0);
+    console.log(`  device speed ${speed}:`, res.verdict, `${res.hz} Hz`);
+    return res;
+  };
+  const ok = await check(1);
+  assert.equal(ok.verdict, 'ok');
+  assert.ok(Math.abs(ok.hz - 1000) < 15, `1000 Hz comes back as 1000 Hz, got ${ok.hz}`);
+  assert.match(ok.msg, /Tone check passed/);
+  assert.match(ok.cls, /good/);
+
+  const half = await check(0.5);
+  assert.equal(half.verdict, 'half', 'stereo read as mono');
+  assert.ok(Math.abs(half.hz - 500) < 10, `got ${half.hz}`);
+  assert.match(half.msg, /HALF speed/);
+  assert.match(half.msg, /Recording tab .* "Microphone \(Steam Streaming Microphone\)"/, 'says which half to change');
+  assert.match(half.msg, /channels, bits and Hz must all match/);
+  assert.match(half.cls, /err/);
+
+  const rate = await check(44100 / 48000);
+  assert.equal(rate.verdict, 'rate_low', '48000 Hz read as 44100 Hz');
+  assert.ok(Math.abs(rate.hz - 919) < 10, `got ${rate.hz}`);
+  assert.match(rate.msg, /different sample rates/);
+
+  const silent = await check(0);
+  assert.equal(silent.verdict, 'silent');
+  assert.match(silent.msg, /Nothing came back/);
+
+  // Afterwards the microphone is back, and the call never dropped.
+  const after = await client.evaluate(() => {
+    const pc = window.__pcs[window.__pcs.length - 1];
+    return { track: pc.getSenders()[0].track.label, state: pc.connectionState, pcs: window.__openPcs(), micDisabled: document.getElementById('mic').disabled };
+  });
+  console.log('  after the tone checks:', JSON.stringify(after));
+  assert.match(after.track, /Fake/, 'the microphone is sent again, not the tone');
+  assert.equal(after.state, 'connected');
+  assert.equal(after.pcs, 1, 'no reconnect was needed');
+  assert.equal(after.micDisabled, false);
+  const p1 = await receiver.evaluate(() => window.tailmic.stats.packetsReceived);
+  await sleep(2500); // the PC page counts packets once a second: wait for at least two counts
+  assert.ok(await receiver.evaluate(() => window.tailmic.stats.packetsReceived) > p1 + 100, 'microphone audio flows again');
+}, WITH_STEAM_MIC);
+
+await run('test what the game hears: listening live stops on "Stop listening" and when the call ends', TEST_CFG, async (t) => {
+  const { receiver, client } = t;
+  await ready(t);
+  await client.click('#connect');
+  await connected(client);
+  await waitFor(client, () => !document.getElementById('testLive').disabled);
+  await client.click('#testLive');
+  await waitFor(receiver, () => window.__liveTracks() === 1);
+  await waitFor(client, () => { const m = document.getElementById('monitor'); return !m.muted && !m.paused && m.srcObject; });
+  const ui = await client.evaluate(() => ({ live: document.getElementById('testLive').textContent, rec: document.getElementById('testRec').disabled }));
+  assert.deepEqual(ui, { live: 'Stop listening', rec: true });
+  await client.click('#testLive');
+  await waitFor(receiver, () => window.__liveTracks() === 0);
+  assert.equal(await client.evaluate(() => document.getElementById('monitor').srcObject), null, 'nothing is played any more');
+  // Start again, then hang up in the middle.
+  await waitFor(client, () => !document.getElementById('testLive').disabled);
+  await client.click('#testLive');
+  await waitFor(receiver, () => window.__liveTracks() === 1);
+  await client.click('#connect'); // Disconnect
+  await waitFor(receiver, () => window.__liveTracks() === 0 && window.tailmic.status === 'Ready');
+  const end = await client.evaluate(() => ({ live: document.getElementById('testLive').textContent, off: document.getElementById('testLive').disabled, paused: document.getElementById('monitor').paused }));
+  console.log('  after hanging up mid-test:', JSON.stringify(end), '| PC:', JSON.stringify(await pcListening(receiver)));
+  assert.deepEqual(end, { live: 'Listen live', off: true, paused: true });
+}, WITH_STEAM_MIC);
+
+// This PC has microphones, but not Steam's. The old "captureDeviceMatch" setting is given on
+// purpose: it must make no difference any more.
+await run('test what the game hears: the PC refuses to listen to any other microphone, whatever the settings say', { ...TEST_CFG, captureDeviceMatch: 'Fake Audio Input' }, async (t) => {
+  const { receiver, client } = t;
+  await ready(t);
+  await client.click('#connect');
+  await connected(client);
+  await waitFor(client, () => !document.getElementById('testRec').disabled);
+  const opened = await receiver.evaluate(() => window.__streams.length);
+  await client.click('#testRec');
+  await waitFor(client, () => /cannot find "Microphone \(Steam Streaming Microphone\)"/.test(document.getElementById('testMsg').textContent));
+  await sleep(500);
+  const r = await receiver.evaluate(() => ({ opened: window.__streams.length, live: window.__liveTracks(), row: document.getElementById('test').textContent }));
+  console.log('  PC without the Steam microphone:', JSON.stringify(r), '|', await client.textContent('#testMsg'));
+  assert.equal(r.opened, opened, 'no microphone was opened at all');
+  assert.deepEqual({ live: r.live, row: r.row }, { live: 0, row: 'off' });
+  assert.equal(await client.evaluate(() => window.tailmic.stats.connectionState), 'connected');
+});
+
+await run('test what the game hears: the PC stops listening at once if its confirmation is refused', TEST_CFG, async (t) => {
+  const { receiver, client } = t;
+  await ready(t);
+  await client.click('#connect');
+  await connected(client);
+  await waitFor(client, () => !document.getElementById('testRec').disabled);
+  const opened = await receiver.evaluate(() => window.__streams.length);
+  await client.click('#testRec');
+  await waitFor(receiver, (n) => window.__streams.length > n, opened); // the PC opened the microphone...
+  await waitFor(receiver, () => window.__liveTracks() === 0, null, 3000); // ...and closed it again, long before the 30-second limit
+  assert.deepEqual(await pcListening(receiver), { live: 0, row: 'off' });
+  await waitFor(client, () => /did not start the test in time/.test(document.getElementById('testMsg').textContent), null, 12000);
+  console.log('  laptop was told:', await client.textContent('#testMsg'));
+  assert.equal(await client.evaluate(() => window.tailmic.stats.connectionState), 'connected');
+}, {
+  // As if the laptop had given up, or stopped the test, while the PC was still opening the microphone.
+  steamMic: true,
+  beforeReceiver: (rctx) => rctx.route('**/api/testack', (route) => route.fulfill({ status: 410, contentType: 'application/json', body: '{"error":"no_such_test"}' })),
+});
+
+// ---------- the PC window's own browser profile ----------
+await run('PC profile: TailMic\'s own page gets audio devices without a prompt and without opening any microphone; other sites get nothing',
+  TEST_CFG, async (t) => {
+    const { receiver, client, cfg, rctx } = t;
+    await ready(t);
+    const start = await receiver.evaluate(async () => ({
+      permission: (await navigator.permissions.query({ name: 'microphone' })).state,
+      opened: window.__streams.length,
+      device: document.getElementById('device').textContent,
+    }));
+    console.log('  PC window at start:', JSON.stringify(start));
+    assert.equal(start.permission, 'granted');
+    assert.equal(start.opened, 0, 'no microphone was opened to find the device');
+    assert.match(start.device, /Fake Audio Output/);
+    // A complete call, and a tone check, under the page's real security policy.
+    const violations = [];
+    receiver.on('console', (m) => /Content Security Policy/i.test(m.text()) && violations.push(m.text()));
+    await client.click('#connect');
+    await connected(client);
+    await waitFor(receiver, () => (window.tailmic.stats.packetsReceived || 0) > 50);
+    assert.equal(await receiver.evaluate(() => window.__streams.length), 0, 'still no microphone opened during a normal call');
+    await receiver.evaluate(() => { window.__loop = 1; });
+    await waitFor(client, () => !document.getElementById('testTone').disabled);
+    await client.click('#testTone');
+    await testDone(client, 'tone');
+    assert.equal(await client.evaluate(() => window.tailmic.test.verdict), 'ok');
+    assert.deepEqual(violations, [], 'the page broke none of its own security rules');
+    // Any other site opened in the same profile has no permission at all.
+    const other = await rctx.newPage();
+    await other.goto(`http://localhost:${cfg.receiverPort}/icon.svg`); // to a browser, "localhost" is a different site than "127.0.0.1"
+    const elsewhere = await other.evaluate(async () => ({
+      site: location.origin,
+      permission: (await navigator.permissions.query({ name: 'microphone' })).state,
+      names: (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.label).length,
+    }));
+    console.log('  another site in the same profile:', JSON.stringify(elsewhere));
+    assert.equal(elsewhere.site, `http://localhost:${cfg.receiverPort}`);
+    assert.equal(elsewhere.permission, 'prompt', 'not allowed in advance');
+    assert.equal(elsewhere.names, 0, 'cannot even see device names');
+  }, { realProfile: (cfg) => `http://127.0.0.1:${cfg.receiverPort}`, steamMic: true });
+
+await run('PC profile: without the permission the window says so, status reports it, and nothing is opened',
+  { allowedCidrs: LAB_CIDRS, outputDeviceMatch: FAKE_OUTPUT }, async ({ receiver, cfg }) => {
+    await waitFor(receiver, () => window.tailmic.status === 'Needs permission');
+    let h;
+    for (let i = 0; i < 20; i++) { h = await health(cfg); if (h.needsPermission) break; await sleep(200); }
+    console.log('  health:', JSON.stringify({ window: h.receiverWindow, needsPermission: h.needsPermission, output: h.outputDevice }));
+    assert.equal(h.receiverWindow, true, 'the window is connected, so status can explain what it waits for');
+    assert.equal(h.needsPermission, true);
+    assert.equal(h.outputDevice, null);
+    assert.equal(await receiver.evaluate(() => window.__liveTracks()), 0);
+  }, { realProfile: () => 'http://127.0.0.1:9' }); // prepared for some other site: as good as not prepared
 
 await run('Tailscale-only policy refuses a non-Tailscale network (this container has no 100.x address)', {
   outputDeviceMatch: FAKE_OUTPUT,

@@ -16,14 +16,28 @@ Ensure-DataDir
 # ---- Over SSH (not on the desktop): start TailMic in the desktop session instead.
 if (-not (Test-OnDesktop)) {
     if (-not (Test-UserLoggedOn)) {
-        Write-Bad "Nobody is logged in to Windows as $env:USERNAME. Log in first (for example through Moonlight), then try again."
+        Write-Bad "Nobody is logged in to Windows as $(Get-CurrentUserName). Log in first (for example through Moonlight), then try again."
         exit 1
     }
     $h = Get-TailMicHealth
     if (-not ($h -and $h.receiverWindow)) {
-        try { Register-TailMicTask } catch { Write-Bad "Could not create the TailMic scheduled task: $($_.Exception.Message)"; exit 1 }
+        # Setup already created the task. Only (re)create it when it is missing or
+        # points at another folder; if that fails, an existing task is still used.
+        $task = Get-TailMicTask
+        if (-not $task -or -not (Test-TailMicTaskCurrent $task)) {
+            try { Register-TailMicTask }
+            catch {
+                if (-not $task) {
+                    Write-Bad "Could not create the TailMic scheduled task: $($_.Exception.Message)"
+                    Write-Host '       Run Setup-TailMic.cmd once at the PC desktop (for example through Moonlight); it creates the task.'
+                    exit 1
+                }
+                Write-Warn2 "Could not update the TailMic scheduled task ($($_.Exception.Message)). Using the existing one."
+            }
+        }
         Write-Host 'Starting TailMic on the PC desktop...'
-        Start-ScheduledTask -TaskName $Script:TaskName
+        try { Start-ScheduledTask -TaskName $Script:TaskName -ErrorAction Stop }
+        catch { Write-Bad "Could not start the TailMic scheduled task: $($_.Exception.Message)"; exit 1 }
         $h = Wait-TailMicReady 60
     }
     if (Show-TailMicStatus $h) { exit 0 } else { exit 1 }
@@ -121,9 +135,8 @@ $browserArgs = @(
     '--no-default-browser-check',
     '--disable-extensions',
     '--disable-sync',
-    # Grants this TailMic-only profile microphone access without a prompt, so it
-    # works without anyone at the PC (it only ever loads TailMic's own local page).
-    '--use-fake-ui-for-media-stream',
+    # No switch that lets every site use the microphone: the profile itself allows
+    # TailMic's own page only (see Initialize-ReceiverProfile).
     '--autoplay-policy=no-user-gesture-required',
     '--disable-background-timer-throttling',
     '--disable-renderer-backgrounding',
@@ -135,6 +148,16 @@ $running = @(Get-TailMicProcesses | Where-Object { $_.Name -eq $browser.Process 
 if ($running.Count -gt 0 -and -not $FirstRun) {
     Write-Ok 'TailMic receiver window is already open.'
 } else {
+    if ($running.Count -eq 0) {
+        try { Initialize-ReceiverProfile $browser.Profile $receiverPort }
+        catch { Write-Warn2 "Could not prepare the TailMic browser profile ($($_.Exception.Message)). The TailMic window may ask for permission once." }
+        # Left over from TailMic 1.0 (see common.ps1); nothing in them is worth keeping.
+        if (@(Get-TailMicProcesses | Where-Object { $_.Name -ne 'node.exe' }).Count -eq 0) {
+            foreach ($old in $Script:OldBrowserProfiles) {
+                if (Test-Path $old) { Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    }
     Start-Process -FilePath $browser.Exe -ArgumentList $browserArgs -WindowStyle $style | Out-Null
     Write-Ok "TailMic receiver window opened in $($browser.Name) (minimized; you never need to touch it)."
 }

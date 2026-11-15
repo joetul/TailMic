@@ -1,8 +1,7 @@
 # Turn "start TailMic when I log in to Windows" on or off (no admin needed).
 param([switch]$Enable, [switch]$Disable)
 . (Join-Path $PSScriptRoot 'common.ps1')
-$startup = [Environment]::GetFolderPath('Startup')
-$lnk = Join-Path $startup 'TailMic.lnk'
+$lnk = Get-AutostartShortcut
 if ($Disable) {
     if (Test-Path $lnk) { Remove-Item $lnk -Force }
     Write-Ok 'TailMic will no longer start with Windows.'

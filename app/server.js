@@ -7,7 +7,10 @@
 //   * receiver port (default 8471): the receiver page opened by Chrome or Edge on this PC.
 //
 // Audio itself never passes through this server: it flows directly between the
-// two browsers (WebRTC, DTLS-SRTP). Each browser is only ever told the other's
+// two browsers (WebRTC, DTLS-SRTP). That includes "Test what the game hears",
+// where the PC window sends the sound of "Microphone (Steam Streaming Microphone)"
+// back to the laptop over the same connection; this server only passes on the
+// request to start or stop it. Each browser is only ever told the other's
 // Tailscale addresses: every other ICE candidate is removed here, and the PC's
 // side is pinned to the PC's exact Tailscale IPs (from `tailscale ip`).
 
@@ -24,6 +27,26 @@ const WEB = path.join(HERE, 'web');
 const MAX_BODY = 64 * 1024;
 const MAX_DISCARD = 1024 * 1024; // after refusing a big body, read at most this much more, then cut the connection
 const ANSWER_TIMEOUT_MS = 15000;
+const TEST_TIMEOUT_MS = 8000; // how long the PC window gets to start a "what the game hears" test
+
+/**
+ * Which TailMic this is: the version from package.json and a short fingerprint of
+ * the program files in this folder. `TailMic.cmd status` compares the running
+ * server's fingerprint with the files on disk, so it can tell when TailMic was
+ * updated but not restarted (or is running from another folder).
+ */
+export function buildInfo() {
+  let version = 'unknown';
+  try { version = String(JSON.parse(fs.readFileSync(path.join(HERE, 'package.json'), 'utf8')).version); } catch { /* keep 'unknown' */ }
+  const hash = crypto.createHash('sha256');
+  let web = [];
+  try { web = fs.readdirSync(WEB).sort().map((f) => `web/${f}`); } catch { /* no web folder: the fingerprint shows it */ }
+  for (const name of ['server.js', 'config.default.json', 'package.json', ...web]) {
+    hash.update(`${name}\0`);
+    try { hash.update(fs.readFileSync(path.join(HERE, name))); } catch { hash.update('(unreadable)'); }
+  }
+  return { version, id: hash.digest('hex').slice(0, 12) };
+}
 
 export function loadConfig(file) {
   const defaults = JSON.parse(fs.readFileSync(path.join(HERE, 'config.default.json'), 'utf8'));
@@ -77,7 +100,7 @@ export function makePcIps(tailscaleExe, ttlMs = 30000) {
 }
 
 const STATIC = {
-  client: { '/': 'client.html', '/client.js': 'client.js', '/sdp.js': 'sdp.js', '/style.css': 'style.css', '/icon.svg': 'icon.svg' },
+  client: { '/': 'client.html', '/client.js': 'client.js', '/sdp.js': 'sdp.js', '/tone.js': 'tone.js', '/style.css': 'style.css', '/icon.svg': 'icon.svg' },
   receiver: { '/': 'receiver.html', '/receiver.js': 'receiver.js', '/sdp.js': 'sdp.js', '/style.css': 'style.css', '/icon.svg': 'icon.svg' },
 };
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
@@ -89,6 +112,7 @@ function baseHeaders(extra = {}) {
     'Referrer-Policy': 'no-referrer',
     'X-Frame-Options': 'DENY',
     'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Resource-Policy': 'same-origin',
     'Content-Security-Policy': "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
     'Permissions-Policy': 'microphone=(self), speaker-selection=(self), camera=(), geolocation=()',
     ...extra,
@@ -159,10 +183,11 @@ const isLoopback = (addr) => addr === '127.0.0.1' || addr === '::1' || addr === 
 export function createTailMic(cfg, { onQuit = () => {} } = {}) {
   const limitedLog = makeLimitedLog();
   const pcIps = makePcIps(cfg.tailscaleExe);
+  const build = buildInfo(); // read once, at start: this is what is running, whatever happens to the files later
   const state = {
     receiver: null, // { res, id, pingTimer }
-    receiverStatus: { deviceFound: false, deviceLabel: '', state: 'offline', updated: 0 },
-    session: null, // { id, user, pending: {resolve}|null }
+    receiverStatus: { deviceFound: false, deviceLabel: '', state: 'offline', testing: false, needsPermission: false, updated: 0 },
+    session: null, // { id, user, pending: {resolve}|null, test: {resolve}|null }
   };
 
   function sse(event, data) {
@@ -295,10 +320,45 @@ export function createTailMic(cfg, { onQuit = () => {} } = {}) {
       return sendJson(res, result.status, result.body);
     }
 
+    // "Test what the game hears": ask the PC window to send the sound of
+    // "Microphone (Steam Streaming Microphone)" back over the call that is already
+    // up, or to stop. Only for the allowed user's own, connected call.
+    if (req.method === 'POST' && url.pathname === '/api/test') {
+      let body;
+      try { body = await readJson(req, res); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+      if (body.action !== 'start' && body.action !== 'stop') return sendJson(res, 400, { error: 'bad_action' });
+      const s = state.session;
+      if (!s || s.id !== body.id || s.user !== user || s.pending) {
+        return sendJson(res, 409, { error: 'no_call', message: 'Connect first, then run the test.' });
+      }
+      if (!state.receiver) return sendJson(res, 503, { error: 'receiver_offline', message: 'TailMic is not running on the PC.' });
+      if (body.action === 'stop') {
+        s.test?.resolve({ status: 409, body: { error: 'test_stopped', message: 'The test was stopped.' } });
+        sse('test', { id: s.id, action: 'stop' });
+        log(`test stopped by ${user} session=${s.id.slice(0, 8)}`);
+        return sendJson(res, 200, { ok: true });
+      }
+      s.test?.resolve({ status: 409, body: { error: 'test_restarted', message: 'The test was started again.' } });
+      log(`test: ${user} listens to what the game hears, session=${s.id.slice(0, 8)}`);
+      const waiting = {};
+      let timer;
+      const result = await new Promise((resolve) => {
+        waiting.resolve = resolve;
+        s.test = waiting;
+        sse('test', { id: s.id, action: 'start' });
+        timer = setTimeout(() => resolve({ status: 504, body: { error: 'receiver_timeout', message: 'The PC did not start the test in time.' } }), TEST_TIMEOUT_MS);
+      });
+      clearTimeout(timer);
+      if (s.test === waiting) s.test = null;
+      // If the PC did not confirm, make sure it is not left listening.
+      if (result.status !== 200 && state.session === s) sse('test', { id: s.id, action: 'stop' });
+      return sendJson(res, result.status, result.body);
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/hangup') {
       let body;
       try { body = await readJson(req, res); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
-      if (state.session && body.id === state.session.id) {
+      if (state.session && body.id === state.session.id && state.session.user === user) {
         log(`hangup from ${user} session=${String(body.id).slice(0, 8)}`);
         state.session.pending?.resolve({ status: 409, body: { error: 'hung_up' } });
         sse('hangup', { id: body.id, reason: 'client' });
@@ -330,6 +390,14 @@ export function createTailMic(cfg, { onQuit = () => {} } = {}) {
       sendJson(res, 403, { error: 'cross_site' });
       return false;
     }
+    // Second check, for a browser too old to send Sec-Fetch-Site: a request that
+    // names the page it comes from must name TailMic's own page.
+    const origin = req.headers.origin;
+    if (origin !== undefined && origin !== `http://${host}`) {
+      limitedLog('refused:origin', `refused request to receiver from ${String(origin).slice(0, 100)}: ${req.method} ${req.url}`);
+      sendJson(res, 403, { error: 'cross_site' });
+      return false;
+    }
     if (req.method === 'POST' && site === 'none') {
       sendJson(res, 403, { error: 'cross_site' });
       return false;
@@ -352,9 +420,14 @@ export function createTailMic(cfg, { onQuit = () => {} } = {}) {
       const st = state.receiverStatus;
       return sendJson(res, 200, {
         server: true,
+        version: build.version,
+        build: build.id,
+        appDir: HERE,
         receiverWindow: !!state.receiver,
         outputDevice: st.deviceFound ? st.deviceLabel : null,
         call: state.session ? { user: state.session.user, state: st.state, since: new Date(state.session.since).toISOString() } : null,
+        needsPermission: !!(state.receiver && st.needsPermission), // the PC window waits for someone to click "Allow"
+        test: !!(state.receiver && st.testing), // the laptop is listening to "Microphone (Steam Streaming Microphone)" right now
         allowedUsers: cfg.allowedUsers,
         serveHost: cfg.serveHost || null,
         httpsPort: cfg.httpsPort,
@@ -404,7 +477,7 @@ export function createTailMic(cfg, { onQuit = () => {} } = {}) {
         clearInterval(rec.pingTimer);
         if (state.receiver === rec) {
           state.receiver = null;
-          state.receiverStatus = { ...state.receiverStatus, state: 'offline' };
+          state.receiverStatus = { ...state.receiverStatus, state: 'offline', testing: false, needsPermission: false };
           log('receiver disconnected');
         }
       });
@@ -433,6 +506,23 @@ export function createTailMic(cfg, { onQuit = () => {} } = {}) {
       return sendJson(res, 200, { ok: true });
     }
 
+    if (req.method === 'POST' && url.pathname === '/api/testack') {
+      // The PC window says whether it started the "what the game hears" test.
+      let body;
+      try { body = await readJson(req, res); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+      const s = state.session;
+      if (!s || s.id !== body.id || !s.test) return sendJson(res, 410, { error: 'no_such_test' });
+      if (body.ok) {
+        s.test.resolve({ status: 200, body: { ok: true, device: String(body.device || '').slice(0, 200) } });
+      } else {
+        s.test.resolve({ status: 502, body: {
+          error: String(body.error || 'test_failed').slice(0, 40),
+          message: String(body.message || 'The PC could not start the test.').slice(0, 300),
+        } });
+      }
+      return sendJson(res, 200, { ok: true });
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/ended') {
       // The PC window dropped a call (failed, blocked, or replaced): forget it.
       let body;
@@ -451,6 +541,8 @@ export function createTailMic(cfg, { onQuit = () => {} } = {}) {
         deviceFound: !!body.deviceFound,
         deviceLabel: String(body.deviceLabel || '').slice(0, 200),
         state: String(body.state || '').slice(0, 40),
+        testing: !!body.testing,
+        needsPermission: !!body.needsPermission,
         updated: Date.now(),
       };
       return sendJson(res, 200, { ok: true });
@@ -468,6 +560,7 @@ export function createTailMic(cfg, { onQuit = () => {} } = {}) {
 
   return {
     state,
+    build,
     clientServer: http.createServer(wrap(onClient)),
     receiverServer: http.createServer(wrap(onReceiver)),
   };
@@ -490,6 +583,12 @@ export async function start(cfg, hooks) {
 // ---------- CLI ----------
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
+  if (process.argv.includes('--build')) {
+    // For `TailMic.cmd status`: which version the files in this folder are.
+    const b = buildInfo();
+    process.stdout.write(`${b.version} ${b.id}\n`);
+    process.exit(0);
+  }
   const cfgFile = arg('--config') || process.env.TAILMIC_CONFIG;
   const logFile = arg('--log');
   const tailscaleArg = arg('--tailscale'); // path to tailscale.exe, used to read the PC's own Tailscale IPs
@@ -521,7 +620,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     setTimeout(() => process.exit(0), 200);
   };
   start(cfg, { onQuit: quit }).then(
-    (s) => (running = s) && log(`TailMic listening: client 127.0.0.1:${s.clientPort} (via tailscale serve), receiver http://127.0.0.1:${s.receiverPort}/ ; allowed users: ${cfg.allowedUsers.join(', ') || '(none)'}`),
+    (s) => (running = s) && log(`TailMic ${s.build.version} (${s.build.id}) listening: client 127.0.0.1:${s.clientPort} (via tailscale serve), receiver http://127.0.0.1:${s.receiverPort}/ ; allowed users: ${cfg.allowedUsers.join(', ') || '(none)'}`),
     (e) => {
       console.error(e.code === 'EADDRINUSE' ? `Port already in use (${e.port}). Is TailMic already running?` : e);
       process.exit(1);
