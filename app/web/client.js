@@ -472,14 +472,28 @@ const FORMAT_FIX = 'Fix on the PC: Settings → System → Sound → More sound 
   + 'Set Default Format to exactly what "TailMic.cmd status" prints for the Speakers half, for example "2 channel, 32 bit, 48000 Hz" (channels, bits and Hz must all match). Then restart TailMic and the game.';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// A finished test's note ("That is what the game hears...", "Tone check passed...")
+// makes way for the usual hint after this long. A problem (red) stays until the
+// next test: it often comes with steps to follow on the PC.
+const TEST_NOTE_MS = 15000;
+let testNoteTimer = 0;
+
 function setTestMsg(text, kind = '') {
+  clearTimeout(testNoteTimer);
   ui.testMsg.textContent = text;
   ui.testMsg.classList.toggle('err', kind === 'bad');
   ui.testMsg.classList.toggle('good', kind === 'ok');
 }
 
+const canTest = () => !!(pc && pc.connectionState === 'connected' && returnTrack && sessionId);
+
+/** What the test card says when no test runs and there is no result to show. */
+const idleTestMsg = () => (canTest()
+  ? 'Ready. "Tone check" tells you in a few seconds whether speed and pitch are right.'
+  : 'Connect first.');
+
 function renderTest() {
-  const can = !!(pc && pc.connectionState === 'connected' && returnTrack && sessionId);
+  const can = canTest();
   const live = !!test && test.kind === 'live';
   ui.testRec.disabled = ui.testTone.disabled = !can || !!test;
   ui.testLive.disabled = !can || (!!test && !live);
@@ -488,7 +502,7 @@ function renderTest() {
   // A tone check sends the tone in place of the microphone, so don't switch microphones meanwhile.
   ui.mic.disabled = ui.ns.disabled = !!test && test.kind === 'tone';
   if (!can && !test && !ui.testMsg.classList.contains('err') && !ui.testMsg.classList.contains('good')) setTestMsg('Connect first.');
-  else if (can && !test && ui.testMsg.textContent === 'Connect first.') setTestMsg('Ready. "Tone check" tells you in a few seconds whether speed and pitch are right.');
+  else if (can && !test && ui.testMsg.textContent === 'Connect first.') setTestMsg(idleTestMsg());
 }
 
 /** What a tone check result means, in plain words. Returns [text, 'ok' | 'bad']. */
@@ -659,6 +673,11 @@ async function runTest(kind) {
     stopPcCapture(t);
     if (test === t) test = null;
     renderTest();
+    if (!test && !ui.testMsg.classList.contains('err')) {
+      testNoteTimer = setTimeout(() => {
+        if (!test && ui.testMsg.textContent !== idleTestMsg()) setTestMsg(idleTestMsg());
+      }, TEST_NOTE_MS);
+    }
   }
 }
 
