@@ -211,11 +211,32 @@ function Get-EdgeExe {
     return $null
 }
 
+# True when the "receiverBrowser" setting is the path of a browser program, not a name.
+function Test-BrowserPath([string]$pref) {
+    $p = ([string]$pref).Trim()
+    return ($p.Contains('\') -or $p.Contains('/') -or $p.ToLower().EndsWith('.exe'))
+}
+
 # Picks the browser for the PC receiver window.
-# $pref: 'auto' (Chrome if installed, otherwise Edge), 'chrome' or 'edge'.
-# Returns @{ Name = 'Google Chrome'|'Microsoft Edge'; Key = 'chrome'|'edge'; Exe; Process; Profile } or $null.
+# $pref: 'auto' (Chrome if installed, otherwise Edge), 'chrome', 'edge', or the full
+# path of another Chromium-based browser (Brave, Vivaldi, ...).
+# Returns @{ Name; Key = 'chrome'|'edge'|'other'; Exe; Process; Profile } or $null.
 function Get-ReceiverBrowser([string]$pref) {
     if (-not $pref) { $pref = 'auto' }
+    if (Test-BrowserPath $pref) {
+        # Any Chromium-based browser takes the same switches and the same prepared profile.
+        $exe = $pref.Trim().Trim('"')
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { return $null }
+        $exe = (Resolve-Path -LiteralPath $exe).Path
+        $file = Split-Path -Leaf $exe
+        $short = ([System.IO.Path]::GetFileNameWithoutExtension($file).ToLower() -replace '[^a-z0-9]', '')
+        if (-not $short) { $short = 'other' }
+        $name = ''
+        try { $name = [string][System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductName } catch { }
+        if (-not $name) { $name = $file }
+        # Its own profile folder, named after the program (brave.exe -> browser-brave).
+        return @{ Name = $name; Key = 'other'; Exe = $exe; Process = $file; Profile = (Join-Path $Script:DataDir "browser-$short") }
+    }
     $pref = $pref.Trim().ToLower()
     $order = @('chrome', 'edge')
     if ($pref -eq 'edge') { $order = @('edge') }
@@ -353,14 +374,26 @@ function Show-SteamMicFormatCheck {
 function Get-TailMicProcesses {
     $out = @()
     try {
-        $all = Get-CimInstance Win32_Process -Filter "Name='node.exe' OR Name='chrome.exe' OR Name='msedge.exe'" -ErrorAction Stop
+        # node.exe, Chrome, Edge, and the browser named by a path in the settings (if any).
+        $names = @('node.exe', 'chrome.exe', 'msedge.exe')
+        try {
+            $pref = [string](Read-Config).receiverBrowser
+            if (Test-BrowserPath $pref) {
+                $other = Split-Path -Leaf $pref.Trim().Trim('"')
+                if ($other -and ($other -notmatch "'") -and ($names -notcontains $other.ToLower())) { $names += $other }
+            }
+        } catch { }
+        $filter = (@($names | ForEach-Object { "Name='$_'" }) -join ' OR ')
+        # Every TailMic browser profile is a folder "browser-..." in TailMic's data folder.
+        $profiles = @((Join-Path $Script:DataDir 'browser-')) + $Script:OldBrowserProfiles
+        $all = Get-CimInstance Win32_Process -Filter $filter -ErrorAction Stop
         foreach ($p in $all) {
             $cl = [string]$p.CommandLine
             if (-not $cl) { continue }
             if ($p.Name -eq 'node.exe') {
                 if ($cl.Contains($Script:ServerJs)) { $out += $p }
             } else {
-                foreach ($prof in (@($Script:BrowserProfiles.Values) + $Script:OldBrowserProfiles)) {
+                foreach ($prof in $profiles) {
                     if ($cl.Contains($prof)) { $out += $p; break }
                 }
             }
@@ -479,6 +512,32 @@ function Wait-TailMicReady([int]$seconds) {
         Start-Sleep -Milliseconds 500
     }
     return $h
+}
+
+# ---------------------------------------------------------------- update helpers
+# True when $dir holds TailMic (its main files are there).
+function Test-TailMicFolder([string]$dir) {
+    foreach ($f in @('TailMic.cmd', (Join-Path 'app' 'server.js'), (Join-Path 'scripts' 'start.ps1'))) {
+        if (-not (Test-Path -LiteralPath (Join-Path $dir $f))) { return $false }
+    }
+    return $true
+}
+
+# The version number of the TailMic in $dir.
+function Get-FolderVersion([string]$dir) {
+    try { return [string](Get-Content -Raw (Join-Path (Join-Path $dir 'app') 'package.json') | ConvertFrom-Json).version } catch { return 'unknown' }
+}
+
+# The files in $from that are missing in $to or different there (as paths inside $from).
+function Get-ChangedFiles([string]$from, [string]$to) {
+    $out = @()
+    $base = (Resolve-Path -LiteralPath $from).Path.TrimEnd('\', '/')
+    foreach ($f in @(Get-ChildItem -LiteralPath $base -Recurse -File)) {
+        $rel = $f.FullName.Substring($base.Length + 1)
+        $target = Join-Path $to $rel
+        if (-not (Test-Path -LiteralPath $target) -or ((Get-FileHash -LiteralPath $f.FullName).Hash -ne (Get-FileHash -LiteralPath $target).Hash)) { $out += $rel }
+    }
+    return $out
 }
 
 # Version and fingerprint of the TailMic files in THIS folder (see buildInfo in

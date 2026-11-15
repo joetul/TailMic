@@ -90,6 +90,19 @@ try { Initialize-ReceiverProfile (Join-Path ([System.IO.Path]::GetTempPath()) "n
 Check 'profile: refuses to touch a folder outside TailMic''s own' $refused $true
 Check 'old (1.0) profiles are still closed by stop' (@($Script:OldBrowserProfiles | ForEach-Object { Split-Path -Leaf $_ })) @('chrome-profile', 'edge-profile')
 
+# ---- another Chromium-based browser on the PC, named by its path in the settings
+$brave = Join-Path (Join-Path $env:LOCALAPPDATA 'Brave Software') 'Brave.exe'
+New-Item -ItemType Directory -Path (Split-Path $brave) -Force | Out-Null
+'not a real program' | Set-Content $brave
+$b = Get-ReceiverBrowser $brave
+Check 'browser path: the program is used as it is' @($b.Key, $b.Exe, $b.Process) @('other', $brave, 'Brave.exe')
+Check 'browser path: it gets its own TailMic profile, named after the program' $b.Profile (Join-Path $Script:DataDir 'browser-brave')
+Check 'browser path: quotes and spaces around it are accepted' (Get-ReceiverBrowser "  `"$brave`" ").Exe $brave
+Check 'browser path: a program that is not there is not accepted' (Get-ReceiverBrowser (Join-Path $env:LOCALAPPDATA 'nothing.exe')) $null
+Check 'browser setting: names and paths are told apart' @((Test-BrowserPath 'auto'), (Test-BrowserPath 'Edge'), (Test-BrowserPath 'C:/Program Files/X/brave.exe'), (Test-BrowserPath 'brave.exe')) @($false, $false, $true, $true)
+Initialize-ReceiverProfile $b.Profile 8471
+Check 'browser path: its profile is prepared like the others' (Test-Path (Join-Path (Join-Path $b.Profile 'Default') 'Preferences')) $true
+
 # ---- status after an update: the running TailMic must be the files in this folder
 $bin = Join-Path $env:LOCALAPPDATA 'bin'
 New-Item -ItemType Directory -Path $bin | Out-Null
@@ -112,6 +125,59 @@ Check 'status: nothing running' (Show-TailMicStatus $null 6>$null) $false
 $waiting = Health 'aaaaaaaaaaaa'; $waiting.outputDevice = $null; $waiting | Add-Member -NotePropertyName needsPermission -NotePropertyValue $true
 $said = (Show-TailMicStatus $waiting 6>&1 | Out-String)
 Check 'status: says when the PC window waits for permission' ($said -match 'waiting for permission') $true
+
+# ---- Update-TailMic: the whole update, with a zip made here instead of a download
+$work = Join-Path $env:LOCALAPPDATA 'update-test'
+$latest = Join-Path (Join-Path $work 'zip') 'TailMic-main'    # GitHub's zip has one folder, "TailMic-main"
+$inst = Join-Path $work 'installed'
+foreach ($d in @($latest, $inst)) {
+    New-Item -ItemType Directory -Path $d -Force | Out-Null
+    foreach ($item in @('app', 'scripts', 'tests')) { Copy-Item (Join-Path $root $item) $d -Recurse }
+    Copy-Item (Join-Path $root '*.cmd') $d
+    Copy-Item (Join-Path $root 'README.md') $d
+}
+$zipFile = Join-Path $work 'main.zip'
+Compress-Archive -Path $latest -DestinationPath $zipFile
+$update = Join-Path (Join-Path $inst 'scripts') 'update.ps1'
+function Run-Update { $o = (& pwsh -NoProfile -File $update -FromZip $zipFile 2>&1 | Out-String); return @{ Code = $LASTEXITCODE; Text = $o } }
+$latestVer = Get-FolderVersion $latest
+Check 'update: this folder is recognised as TailMic, an empty one is not' @((Test-TailMicFolder $inst), (Test-TailMicFolder $work)) @($true, $false)
+Check 'update: identical folders have no changed files' @(Get-ChangedFiles $latest $inst).Count 0
+
+# An older install: an old version number, one file changed, one file missing, and a file of the user's own.
+$pkg = Join-Path (Join-Path $inst 'app') 'package.json'
+(Get-Content -Raw $pkg).Replace("`"version`": `"$latestVer`"", '"version": "0.9.0"') | Set-Content $pkg -NoNewline
+Add-Content (Join-Path (Join-Path $inst 'app') 'server.js') '// an older server'
+Remove-Item (Join-Path (Join-Path $inst 'scripts') 'stop.ps1')
+'mine' | Set-Content (Join-Path $inst 'my-notes.txt')
+Check 'update: finds exactly the changed and missing files' @(Get-ChangedFiles $latest $inst | Sort-Object) @((Join-Path 'app' 'package.json'), (Join-Path 'app' 'server.js'), (Join-Path 'scripts' 'stop.ps1'))
+$r = Run-Update
+Check 'update: succeeds' $r.Code 0
+Check 'update: says which version it went from and to' ($r.Text -match "version 0\.9\.0 -> $([regex]::Escape($latestVer)) \(3 file") $true
+Check 'update: says that TailMic was not running' ($r.Text -match 'was not running') $true
+Check 'update: afterwards the folder is the latest version' @((Get-ChangedFiles $latest $inst).Count, (Get-FolderVersion $inst)) @(0, $latestVer)
+Check 'update: a file of your own in the folder is left alone' (Get-Content (Join-Path $inst 'my-notes.txt')) 'mine'
+$r = Run-Update
+Check 'update: a second run changes nothing and says so' @($r.Code, ($r.Text -match 'already up to date')) @(0, $true)
+New-Item -ItemType Directory -Path (Join-Path $inst '.git') | Out-Null
+$r = Run-Update
+Check 'update: a git clone is left to git' @($r.Code, ($r.Text -match 'git pull')) @(1, $true)
+Remove-Item (Join-Path $inst '.git') -Force
+# Something that is not TailMic must never be copied over the install.
+$junk = Join-Path $work 'junk'; New-Item -ItemType Directory -Path (Join-Path $junk 'something-else') -Force | Out-Null
+'x' | Set-Content (Join-Path (Join-Path $junk 'something-else') 'TailMic.cmd')
+$zipFile = Join-Path $work 'junk.zip'; Compress-Archive -Path (Join-Path $junk 'something-else') -DestinationPath $zipFile
+$before = (Get-FileHash (Join-Path $inst 'TailMic.cmd')).Hash
+$r = Run-Update
+Check 'update: a download that is not TailMic is refused and nothing is changed' @($r.Code, ($r.Text -match 'does not look like TailMic'), ((Get-FileHash (Join-Path $inst 'TailMic.cmd')).Hash -eq $before)) @(1, $true, $true)
+'not a zip' | Set-Content $zipFile
+$r = Run-Update
+Check 'update: a broken download is reported and nothing is changed' @($r.Code, ($r.Text -match 'Could not download'), ((Get-FileHash (Join-Path $inst 'TailMic.cmd')).Hash -eq $before)) @(1, $true, $true)
+Check 'update: no temporary files are left behind' @(Get-ChildItem ([System.IO.Path]::GetTempPath()) -Filter 'TailMic-update-*').Count 0
+# The .cmd files that start the update must hand over in ONE line: the update replaces them while they run.
+$one = '-File "%~dp0scripts\update.ps1"'
+Check 'Update-TailMic.cmd: nothing is read from the file after the update line' ((Get-Content (Join-Path $root 'Update-TailMic.cmd'))[-1] -match ([regex]::Escape($one) + ' & .*exit /b$')) $true
+Check 'TailMic.cmd update: nothing is read from the file after the update line' ((Get-Content (Join-Path $root 'TailMic.cmd'))[-1] -match 'update\.ps1" & exit /b$') $true
 
 Remove-Item -Recurse -Force $env:LOCALAPPDATA
 if ($fails) { Write-Host "$fails check(s) failed"; exit 1 }

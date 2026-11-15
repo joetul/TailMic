@@ -1,4 +1,4 @@
-// TailMic client (runs in Chrome on the Mac / laptop).
+// TailMic client (runs in Chrome, or another Chromium-based browser, on the laptop).
 import { filterCandidates, mungeOpus, selectedPair, isAllowedAddress, isAllowedEndpoint } from './sdp.js';
 import { TONE_HZ, peakFrequency, classifyTone } from './tone.js';
 
@@ -62,6 +62,7 @@ function armSounds() {
 /** kind: 'down' (three falling beeps, about 2.5 s) or 'up' (one short rising chime). */
 function playSound(kind) {
   window.tailmic.sounds.push(kind);
+  if (window.tailmic.sounds.length > 20) window.tailmic.sounds.shift(); // a short history, not a growing one
   if (!ui.snd.checked || !soundCtx) return;
   try {
     if (soundCtx.state === 'suspended') soundCtx.resume().catch(() => {});
@@ -98,7 +99,7 @@ function announceDown() {
 // so without this you would not notice that the game no longer hears you.
 async function watchPc() {
   let c;
-  try { c = await api('/api/config'); } catch { return; } // a real drop is noticed by the call itself
+  try { c = await api('/api/config?poll'); } catch { return; } // a real drop is noticed by the call itself
   if (!up) return;
   const ok = !!(c.receiverOnline && c.receiver && c.receiver.deviceFound);
   if (ok === pcOk) return;
@@ -251,7 +252,7 @@ function cleanup() {
   clearInterval(statsTimer); statsTimer = null;
   clearTimeout(discTimer); discTimer = null;
   stopMeter();
-  if (pc) { pc.onconnectionstatechange = null; pc.close(); pc = null; }
+  if (pc) { pc.onconnectionstatechange = null; pc.ontrack = null; pc.close(); pc = null; }
   stopStream(stream);
   stream = null;
   last = null;
@@ -783,8 +784,14 @@ window.addEventListener('pagehide', () => {
     setStatus('bad', 'Not allowed', e.message, true);
     if (e.retry) { ui.connect.disabled = false; }
   }
-  setInterval(async () => {
+  // Keep the "PC" line current. Not while this tab is hidden with nothing
+  // connected: then nobody is looking, and the PC is left alone.
+  const lookAtPc = async () => {
+    try { cfg = await api('/api/config?poll'); renderPc(); } catch { /* ignore */ }
+  };
+  setInterval(() => {
     if (wantConnected) { if (up) watchPc(); return; }
-    try { cfg = await api('/api/config'); renderPc(); } catch { /* ignore */ }
+    if (!document.hidden) lookAtPc();
   }, 5000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && !wantConnected) lookAtPc(); });
 })();

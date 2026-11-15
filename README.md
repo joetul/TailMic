@@ -1,13 +1,13 @@
 # TailMic
 
-Talk into the microphone on your laptop (Mac or Windows). Your Windows gaming PC hears it as a normal microphone called **"Microphone (Steam Streaming Microphone)"**, which you can pick in your games.
+Talk into the microphone on your laptop or any other computer (Mac, Windows or Linux). Your Windows gaming PC hears it as a normal microphone called **"Microphone (Steam Streaming Microphone)"**, which you can pick in your games.
 
 - Works next to Moonlight + Sunshine and does **not** change them, or your default speakers.
-- Uses Chrome on the laptop and Chrome **or Edge** on the PC (WebRTC, Opus codec, 48 kHz, 10 ms packets). Echo cancellation and auto gain are off so your voice isn't mangled; **noise suppression** is on by default and can be switched off on the page.
+- Uses a Chromium-based browser on the laptop (Chrome, Edge, Brave, ...) and Chrome **or Edge** on the PC (WebRTC, Opus codec, 48 kHz, 10 ms packets). Echo cancellation and auto gain are off so your voice isn't mangled; **noise suppression** is on by default and can be switched off on the page.
 - Only works **inside your Tailscale network** and only for **your** Tailscale user. Nothing is opened to the internet or your home network.
 
 ```
-Laptop: Chrome page ──(Tailscale, encrypted)──▶ PC: TailMic window ──▶ Speakers (Steam Streaming Microphone)
+Laptop: browser page ─(Tailscale, encrypted)──▶ PC: TailMic window ──▶ Speakers (Steam Streaming Microphone)
                                                                           │
                                          game hears ◀── Microphone (Steam Streaming Microphone)
 ```
@@ -16,12 +16,18 @@ Laptop: Chrome page ──(Tailscale, encrypted)──▶ PC: TailMic window ─
 
 ## What you need
 
-| On the gaming PC (Windows 11) | On the laptop (Mac or Windows) |
+| On the gaming PC (Windows 11) | On the laptop (Mac, Windows or Linux) |
 |---|---|
 | Tailscale, signed in (a **tagged** device is fine) | Tailscale, signed in as **the user you allow in setup** (your own device, not a tagged one) |
-| Google Chrome **or** Microsoft Edge (Edge comes with Windows) | Google Chrome |
+| Google Chrome **or** Microsoft Edge (Edge comes with Windows) | Google Chrome, or another Chromium-based browser (see below) |
 | Steam (running) | A microphone or headset |
 | Node.js. Setup installs it for you | – |
+
+**Which computer can be the "laptop"?** Any computer that runs Tailscale and a Chromium-based browser: a Mac, a Windows PC, a Linux machine or a Chromebook, laptop or desktop. Nothing in TailMic's page depends on the operating system, and its automatic tests run that page on Linux. Phones and tablets are not tested; on an iPhone or iPad every browser uses Safari's engine, not Chromium.
+
+**Which browser on the laptop?** Any browser built on Chromium should work: Chrome, Edge, Brave, Vivaldi, Opera, Arc. They share the engine that TailMic's automatic tests run on, and Chrome is the one it is used with day to day, so this guide says "Chrome". Firefox and Safari are not tested. In Brave, leave **Settings → Privacy and security → WebRTC IP handling policy** on **Default**; other choices can hide the Tailscale address TailMic needs.
+
+**Which browser on the PC?** Chrome or Edge, found automatically. Another Chromium-based browser (Brave, Vivaldi, ...) should work too if you tell TailMic where it is; see the end of Step 2.
 
 **Tip:** use headphones on the laptop. Echo cancellation is off for best quality, so game sound from your laptop speakers would otherwise go back into your mic.
 
@@ -78,9 +84,18 @@ That's all. TailMic uses **Tailscale Serve**, which shares something only inside
 4. At the end, setup shows your laptop address, something like
    **`https://gaming-pc.tail1234.ts.net:8443`**, and copies it to the clipboard. Send it to your laptop (email, notes, etc.).
 
-Windows Firewall: Tailscale's own rule (`Tailscale-In`) normally already allows traffic to the PC's Tailscale addresses, so TailMic needs no firewall rule. If Windows Firewall does ask about Chrome or Edge, choose **Allow**. Private networks are enough.
+Windows Firewall: Tailscale's own rule (`Tailscale-In`) normally already allows traffic to the PC's Tailscale addresses, so TailMic needs no firewall rule. If Windows Firewall does ask about the browser, choose **Allow**. Private networks are enough.
 
-**Chrome or Edge on the PC?** TailMic uses Chrome if it's installed, otherwise Edge. Either way it runs in its own TailMic-only profile, so your normal browser (bookmarks, sign-in, tabs) isn't touched. To always use Edge, open `%LOCALAPPDATA%\TailMic\config.json` in Notepad, add `"receiverBrowser": "edge",` after the first `{`, save, and run `Stop-TailMic.cmd` then `Start-TailMic.cmd`. Use `"chrome"` to force Chrome, or `"auto"` for the default.
+**Which browser does the PC use?** Chrome if it's installed, otherwise Edge. Either way it runs in its own TailMic-only profile, so your normal browser (bookmarks, sign-in, tabs) isn't touched. To choose yourself, open `%LOCALAPPDATA%\TailMic\config.json` in Notepad, add one of these lines after the first `{`, save, and run `TailMic.cmd stop` then `TailMic.cmd start`:
+
+| Line to add | The PC window uses |
+|---|---|
+| `"receiverBrowser": "edge",` | Edge, even if Chrome is installed |
+| `"receiverBrowser": "chrome",` | Chrome |
+| `"receiverBrowser": "C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe",` | The browser at that path. It must be built on Chromium (Brave, Vivaldi, Opera, ...). Write the path with forward slashes `/`. |
+| `"receiverBrowser": "auto",` (or no line) | Chrome if installed, otherwise Edge |
+
+TailMic's automatic tests run on Chromium, the engine inside Chrome and Edge. Other Chromium-based browsers take the same start-up switches and the same prepared profile, so they should work, but they are not tested. If `TailMic.cmd status` then says the PC window is waiting for permission, click **Allow** in the TailMic window once.
 
 ---
 
@@ -89,10 +104,10 @@ Windows Firewall: Tailscale's own rule (`Tailscale-In`) normally already allows 
 **On the PC:** nothing to do if you chose "Start with Windows". Otherwise double-click **`Start-TailMic.cmd`**, or run **`TailMic.cmd start`** (also [over SSH](#start-and-stop-over-ssh-without-touching-the-pc)). The TailMic window opens minimized; you never need to look at it.
 
 **On the laptop:**
-1. Open the address from Step 2 in **Chrome**, and bookmark it.
+1. Open the address from Step 2 in **Chrome** (or your Chromium-based browser), and bookmark it.
 2. Pick your microphone and click **Connect**.
    **Noise suppression** (on by default) filters fans, hum and room noise. Turn it off for the purest sound in a quiet room. You can switch it, or change the microphone, while connected, and the page remembers your choice.
-3. The first time, allow the microphone. On a Mac, also allow Chrome under **System Settings → Privacy & Security → Microphone**.
+3. The first time, allow the microphone. On a Mac, also allow the browser under **System Settings → Privacy & Security → Microphone**.
 4. The status turns green: **Connected**. The meter moves when you talk. **Mute** mutes you, and **Disconnect** stops.
 
 If the connection drops (Wi-Fi, PC restart), the laptop **beeps for a few seconds** so you notice it while you're in Moonlight, and the page reconnects on its own. A short chime tells you it's back. You hear the same beeps if the PC stops playing your microphone (the TailMic window on the PC was closed, or Steam's device disappeared). Untick **Sound alerts** on the page to turn this off.
@@ -144,6 +159,7 @@ ssh you@gaming-pc ".\TailMic\TailMic.cmd start"
 ssh you@gaming-pc ".\TailMic\TailMic.cmd status"
 ssh you@gaming-pc ".\TailMic\TailMic.cmd stop"
 ssh you@gaming-pc ".\TailMic\TailMic.cmd set-user you@example.com"
+ssh you@gaming-pc ".\TailMic\TailMic.cmd update"
 ```
 
 An SSH session starts in your user folder, which is where TailMic is, so `.\TailMic\TailMic.cmd` is all the path you need. (If you put TailMic somewhere else, use its full path, for example `C:\TailMic\TailMic.cmd`.)
@@ -151,7 +167,7 @@ An SSH session starts in your user folder, which is where TailMic is, so `.\Tail
 `start` waits until TailMic is ready, then prints something like:
 
 ```
-   OK  TailMic server: running (version 1.1.0)
+   OK  TailMic server: running (version 1.2.0)
    OK  PC window: open
    OK  Output: Speakers (Steam Streaming Microphone)
    OK  Steam Streaming Microphone format: 2 channel, 32 bit, 48000 Hz (both halves match)
@@ -162,6 +178,7 @@ An SSH session starts in your user folder, which is where TailMic is, so `.\Tail
 
 - You must be **logged in to Windows** on the PC (you are, if Moonlight shows your desktop; a locked screen is fine). Programs started straight from an SSH session can't reach the desktop or play audio there, so `start` runs TailMic in your desktop session through the **TailMic** scheduled task that Setup created.
 - `set-user` changes the allowed Tailscale user without asking anything, so you can paste the login from the laptop instead of typing it through Moonlight. It restarts TailMic if it's running and then shows the status.
+- `update` gets the latest TailMic from GitHub and restarts it; see [Update TailMic](#update-tailmic).
 - `stop` asks the TailMic window and server to close cleanly, and force-closes them only if they're still running after 8 seconds.
 - Start TailMic **before** launching the game, because some games only look for microphones at startup.
 
@@ -173,16 +190,27 @@ An SSH session starts in your user folder, which is where TailMic is, so `.\Tail
 | Check if it's ready | `TailMic.cmd status` |
 | Start with Windows on / off | `Autostart-On.cmd` / `Autostart-Off.cmd` |
 | Change the allowed user | `TailMic.cmd set-user you@example.com` (also over SSH), or run `Setup-TailMic.cmd` again |
-| Update to the latest version | See [Update TailMic](#update-tailmic) |
+| Update to the latest version | Double-click `Update-TailMic.cmd`, or `TailMic.cmd update` (also over SSH). See [Update TailMic](#update-tailmic) |
 | Uninstall | `Stop-TailMic.cmd`, `Autostart-Off.cmd`, then in a terminal: `tailscale serve --https=8443 off` and `schtasks /delete /tn TailMic /f`. Delete the `TailMic` folder in your user folder, and `%LOCALAPPDATA%\TailMic`. |
 
 ---
 
 ## Update TailMic
 
-Updating replaces the TailMic files on the PC with the latest ones from <https://github.com/joetul/TailMic>, and restarts TailMic so it runs them. Your settings (allowed user, ports) are stored in `%LOCALAPPDATA%\TailMic`, not in the TailMic folder, so they are kept. Nothing needs updating on the laptop: it gets its page from the PC.
+- **At the PC:** double-click **`Update-TailMic.cmd`** in the TailMic folder.
+- **From the laptop:** `ssh you@gaming-pc ".\TailMic\TailMic.cmd update"`
 
-On the PC, open **PowerShell** and paste this, or do it from the laptop: connect with `ssh you@gaming-pc` and paste it there. (If the SSH prompt starts with `C:\...>` without `PS` in front, type `powershell` first.)
+Both do the same: download the latest TailMic from <https://github.com/joetul/TailMic> over the files in the TailMic folder, restart TailMic if it was running, and show the status. If you already have the latest version, it says so and changes nothing.
+
+Your settings (allowed user, ports) are stored in `%LOCALAPPDATA%\TailMic`, not in the TailMic folder, so they are kept. Nothing needs updating on the laptop: it gets its page from the PC.
+
+- If `status` shows a problem after an update, run `Setup-TailMic.cmd` again at the PC's desktop and press **Enter** at every question. It keeps your allowed user and your "Start with Windows" choice, and fixes what is missing.
+- If you installed TailMic with `git clone`, use `git pull` instead, then `TailMic.cmd stop` and `TailMic.cmd start`.
+
+<details>
+<summary><b>No <code>Update-TailMic.cmd</code> in your TailMic folder?</b> (installed before version 1.2: do this once)</summary>
+
+On the PC, open **PowerShell** and paste this, or connect with `ssh you@gaming-pc` and paste it there. (If the SSH prompt starts with `C:\...>` without `PS` in front, type `powershell` first.) If TailMic is in another folder, change the first line to it, for example `$dir = "C:\TailMic"`.
 
 ```powershell
 $dir = "$HOME\TailMic"
@@ -194,15 +222,13 @@ Copy-Item "$env:TEMP\TailMic-new\TailMic-main\*" $dir -Recurse -Force
 & "$dir\TailMic.cmd" start
 ```
 
-It stops TailMic, downloads the latest files over the old ones, and starts TailMic again. The last command ends with the status.
+From then on, use `Update-TailMic.cmd`.
 
-- **TailMic is in another folder** (for example `C:\TailMic`, from an earlier install)? Change the first line to that folder, for example `$dir = "C:\TailMic"`. Or move it to the standard folder: stop TailMic (`Stop-TailMic.cmd` in the old folder), do [Step 2](#step-2--set-up-the-gaming-pc-one-time) again (the download commands, then Setup, which re-points "Start with Windows" and the scheduled task to the new folder), and delete the old folder.
-- If `status` shows a problem after an update, run `Setup-TailMic.cmd` again at the PC's desktop and press **Enter** at every question. It keeps your allowed user and your "Start with Windows" choice, and fixes what is missing.
-- If you installed TailMic with `git clone`, `git pull` in the TailMic folder replaces the four download lines.
+</details>
 
 **Check that the PC really runs the new version:** run `TailMic.cmd status` (also over SSH).
 
-- The first line shows the version that is running, for example `TailMic server: running (version 1.1.0)`. The newest version number is in [`app/package.json`](https://github.com/joetul/TailMic/blob/main/app/package.json) on GitHub.
+- The first line shows the version that is running, for example `TailMic server: running (version 1.2.0)`. The newest version number is in [`app/package.json`](https://github.com/joetul/TailMic/blob/main/app/package.json) on GitHub.
 - If it says **"running, but NOT the files in this folder"**, the files were replaced but an older TailMic is still running (or TailMic runs from another folder). Run `TailMic.cmd stop` and then `TailMic.cmd start`. `status` compares the running program with the files on disk, so it notices this even when the version number didn't change.
 - On the laptop, **reload the TailMic page** if it was open during the update.
 
@@ -216,7 +242,7 @@ It stops TailMic, downloads the latest files over the old ones, and starts TailM
 | `status`: **"running, but NOT the files in this folder"** | TailMic was updated but not restarted, or it runs from another folder. Run `TailMic.cmd stop`, then `TailMic.cmd start`. See [Update TailMic](#update-tailmic). |
 | A button or message described here is **missing** on the laptop page | The PC runs an older TailMic. [Update it](#update-tailmic), then reload the page. |
 | **"Steam Streaming Microphone not found"** | Start Steam on the PC. If it still isn't there, the device was never installed. *Speakers (Steam Streaming Speakers)* is a **different** device (Sunshine can add it) and doesn't count: you need *Speakers (Steam Streaming Microphone)* and *Microphone (Steam Streaming Microphone)*. To install them: **1.** on the PC, turn on **Steam → Settings → Remote Play → Enable Remote Play**; **2.** install the free **Steam Link** app on the laptop and connect to the PC once, entering the PIN it shows on the PC; **3.** close Steam Link right away, and keep using Moonlight. Then run `Setup-TailMic.cmd` again and check the format (the row about a slow, deep voice below): a freshly installed device usually needs that fix once. |
-| Laptop: **"The browser on this computer found no Tailscale address"** | Tailscale isn't connected on the laptop. Connect it and click Connect again. |
+| Laptop: **"The browser on this computer found no Tailscale address"** | Tailscale isn't connected on the laptop. Connect it and click Connect again. In Brave, also check that **WebRTC IP handling policy** is on **Default** (Settings → Privacy and security). |
 | PC window: **"No Tailscale address"** | Tailscale isn't connected on the PC. |
 | Page won't open / "site can't be reached" | Check that both devices are connected in Tailscale and that MagicDNS and HTTPS are enabled (Step 1). Then run Setup again on the PC. |
 | **"Tailscale user ... is not allowed"** | The laptop is signed in as a different Tailscale user than the allowed one. Sign in as that user, or allow the one in the message: `TailMic.cmd set-user <that login>` on the PC (also over SSH). |
@@ -243,7 +269,7 @@ It stops TailMic, downloads the latest files over the old ones, and starts TailM
 - **Other websites can't interfere.** The PC side only accepts requests from TailMic's own window, so a website you open in a browser on the PC can't open it or take it over. On the laptop, other websites can't start or stop a TailMic connection.
 - **The PC listens only during a test.** In normal use TailMic only plays sound on the PC. While you run **Test what the game hears**, the TailMic window listens to *Microphone (Steam Streaming Microphone)*, and to no other microphone, and sends that sound to your laptop over the same Tailscale-only connection. It stops with the test or the call, and nothing is written to disk.
 - **One site, one permission.** The TailMic window runs in its own browser profile. Start-TailMic prepares that profile so that exactly one site, TailMic's own page on this PC, may use audio devices without asking. The page needs that to see the names of the audio devices (to find Steam's), and for the test above; this way it works with nobody at the PC. No other site gets anything, even if it were opened in that profile, and TailMic does not open the PC's own microphone. (Only if the prepared permission is missing does the window ask once; clicking Allow then opens the default microphone for an instant.)
-- **Nothing extra on your PC.** No npm packages are needed, the PC uses a separate TailMic-only browser profile (your normal Chrome or Edge isn't touched), and Windows default audio devices aren't changed. TailMic never changes a device's audio format either; if the Steam device needs the format fix, you do it yourself in Windows.
+- **Nothing extra on your PC.** No npm packages are needed, the PC uses a separate TailMic-only browser profile (your normal browser isn't touched), and Windows default audio devices aren't changed. TailMic never changes a device's audio format either; if the Steam device needs the format fix, you do it yourself in Windows.
 
 ### What TailMic trusts
 
@@ -251,14 +277,24 @@ TailMic protects the connection between your laptop and your PC from everyone el
 
 - **The gaming PC, and everything that runs on it.** Programs on the PC, and other Windows accounts on it, can reach TailMic's two local ports, and can already record the Steam microphone directly. Also, the page your laptop opens comes from the PC, and you allowed that page to use the laptop's microphone. So use TailMic on a PC that is yours; if other people log in to it, keep the TailMic folder inside your user folder, where Step 2 puts it.
 - **Your Tailscale account.** Whoever can sign in as the allowed user can connect. Turn on two-factor authentication at your login provider.
-- **The download.** Updating runs whatever is in the GitHub repository at that moment.
+- **The download.** Installing and updating (`Update-TailMic.cmd`) fetch whatever is in the GitHub repository at that moment, over HTTPS, and run it.
 
 ### What is stored and sent
 
 - **No audio is ever stored**, on either side. The 5-second test recording lives in the laptop page's memory until it has played.
 - **Nothing is sent to anyone else.** The pages load no fonts, scripts or anything else from the internet, there is no analytics, and the audio goes directly between your two browsers over Tailscale.
 - **On the PC**, in `%LOCALAPPDATA%\TailMic`: the settings (the allowed login, the PC's Tailscale name, ports), the TailMic-only browser profile, and logs. The logs record when TailMic started, who connected or was refused (Tailscale login), the Tailscale addresses used, and when a test started and stopped. Logs older than 14 days are deleted when TailMic starts.
-- **On the laptop**, in Chrome's storage for the TailMic page: which microphone you picked and the two checkboxes.
+- **On the laptop**, in the browser's storage for the TailMic page: which microphone you picked and the two checkboxes.
+
+### What it costs on the PC
+
+Two things run on the PC, and nothing else stays behind: a small Node.js program (roughly 60 MB of memory) and one minimized browser window with a single page. Both sit idle until you connect; a call is one audio stream of at most about 130 kbit/s.
+
+- **It doesn't grow.** Every call's connection, microphone and timers are closed when it ends, and the tests check that after many calls in a row.
+- **The browser window is kept quiet.** It is started with the browser's own background work switched off (component downloads, update and safety-list checks, reports), because it only ever shows TailMic's page.
+- **Little disk use.** Logs are a few lines per call and are deleted after 14 days.
+
+The browser window is the larger part (like any open browser window, a few hundred MB). To see the real numbers on your PC, open Task Manager and look for `node.exe` and the browser entries that started with TailMic.
 
 ## Ports used
 
@@ -278,12 +314,14 @@ To change the first three, add for example `"httpsPort": 8444` to `%LOCALAPPDATA
 - `app/server.js`: zero-dependency Node.js server (signaling + static files). `app/web/sdp.js` holds the address filter and Opus tuning, shared by the server and both pages.
 - `app/web/tone.js`: the tone check's pitch measurement and verdicts.
 - `scripts/*.ps1`: Windows PowerShell 5.1 scripts behind the `.cmd` files. `scripts/receiver-preferences.json` is what `start.ps1` writes into the TailMic-only browser profile: the permission for TailMic's own page.
+- `scripts/update.ps1` is the update. `Update-TailMic.cmd` and the `update` part of `TailMic.cmd` call it in a single line, on purpose: the update replaces those files while they run, and `cmd.exe` would otherwise go on reading commands from the new file.
 - `app/package.json` holds the version number that `TailMic.cmd status` shows. Raise it when you publish a change, so users can tell which version they run.
 - Tests (Docker only): `sh tests/run-tests.sh`. They cover:
   - unit tests (Node 22) for address filtering, SDP tuning, user and identity checks, request limits, the tone check's verdicts, who may start a test, and the version fingerprint;
-  - script checks in PowerShell 7 on Linux: every script parses, the allowed-user rules (a tagged PC, device names), the settings file, and that `status` notices an outdated running copy, and the prepared browser profile;
+  - script checks in PowerShell 7 on Linux: every script parses, the allowed-user rules (a tagged PC, device names), the settings file, and that `status` notices an outdated running copy, the prepared browser profile, and a complete update from a zip made on the spot (old, missing and unrelated files, a second run, a download that is not TailMic);
   - an end-to-end test with two real headless Chromium browsers and a fake microphone. It checks that audio arrives, the codec is Opus mono at 100 packets/s, the processing settings are applied (including switching noise suppression on mid-call), and audio plays only to the configured device;
   - **Test what the game hears**, with a stand-in for Steam's device: audio comes back, the tone check reports OK, half speed (channel mismatch), a sample-rate mismatch and silence correctly, the PC listens only during a test, and it refuses any other microphone;
   - the PC window in a browser profile prepared exactly as `start.ps1` does it, under the page's real security policy: it gets its devices without a prompt and without opening a microphone, other sites in that profile get nothing, and without the permission `status` says so;
+  - resources: 25 calls in a row leave no connection, microphone or audio context open on either side;
   - a check that the Tailscale-only rule refuses a non-Tailscale network, and that a wrong user is refused.
 - **Not tested automatically** (needs a real Windows PC with Tailscale and Steam): the Windows audio device, Tailscale Serve, the scheduled task (also over SSH), and the Steam device format check. These steps are small and print clear messages if something is wrong.

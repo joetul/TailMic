@@ -512,3 +512,40 @@ test('which microphone a test listens to is not a setting: the PC window is neve
     assert.ok(!('captureDeviceMatch' in loadConfig()), 'and it is not a known setting');
   } finally { close(); }
 });
+
+test("the PC's Tailscale IPs: tailscale is started once for many requests, and regular checks accept older answers", async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { makePcIps } = await import('../../app/server.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-ips-'));
+  const runs = path.join(dir, 'runs');
+  const fake = path.join(dir, 'tailscale');
+  fs.writeFileSync(fake, `#!/bin/sh\necho x >> ${runs}\necho 100.100.9.9\n`);
+  fs.chmodSync(fake, 0o755);
+  const count = () => (fs.existsSync(runs) ? fs.readFileSync(runs, 'utf8').length / 2 : 0);
+  const ips = makePcIps(fake, 60); // answers stay fresh for 60 ms
+  assert.deepEqual(await Promise.all([ips(), ips(), ips()]), [['100.100.9.9'], ['100.100.9.9'], ['100.100.9.9']]);
+  assert.equal(count(), 1, 'three requests at once: one tailscale');
+  await ips();
+  assert.equal(count(), 1, 'a fresh answer is reused');
+  await wait(100);
+  assert.deepEqual(await ips(10000), ['100.100.9.9']);
+  assert.equal(count(), 1, 'a regular check is content with an older answer');
+  await ips();
+  assert.equal(count(), 2, 'starting a call asks again');
+});
+
+test('many different refused users do not make the log limiter grow without end', async () => {
+  const { makeLimitedLog } = await import('../../app/server.js');
+  const lines = [];
+  const L = makeLimitedLog((...a) => lines.push(a.join(' ')), 1, 60000, () => 0);
+  L('denied:first@example.com', 'first');
+  L('denied:first@example.com', 'first again');
+  assert.deepEqual(lines, ['first'], 'a repeat within the minute is held back');
+  for (let i = 0; i < 250; i++) L(`denied:user${i}@example.com`, `user ${i}`);
+  assert.equal(lines.length, 251, 'every new user is still logged once');
+  // More than 200 different keys: the limiter starts over instead of remembering them all.
+  L('denied:first@example.com', 'first, forgotten and logged anew');
+  assert.equal(lines[lines.length - 1], 'first, forgotten and logged anew');
+});

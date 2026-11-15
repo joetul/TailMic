@@ -233,6 +233,7 @@ function closePc(reason) {
   if (sessionId) api('/api/ended', { id: sessionId }).catch(() => {});
   if (pc) {
     pc.onconnectionstatechange = null;
+    pc.ontrack = null;
     pc.close();
     pc = null;
   }

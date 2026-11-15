@@ -143,13 +143,20 @@ if (-not $node -or $major -lt 18) {
 Write-Ok "Node.js v$major at $node"
 
 # ---------------------------------------------------------------- 3. Browser
-Write-Step '3/6  Browser for the TailMic window (Chrome or Edge)'
+Write-Step '3/6  Browser for the TailMic window'
 $browserPref = 'auto'
 try { $browserPref = [string](Read-Config).receiverBrowser } catch { }
 $browser = Get-ReceiverBrowser $browserPref
 if (-not $browser) {
-    Write-Bad "No usable browser found (setting: $browserPref). Microsoft Edge comes with Windows; Google Chrome is at https://www.google.com/chrome"
-    Write-Host "       If you set ""receiverBrowser"" in $Script:ConfigFile, check it is ""auto"", ""chrome"" or ""edge""." 
+    if (Test-BrowserPath $browserPref) {
+        Write-Bad "The browser set in ""receiverBrowser"" was not found: $browserPref"
+        Write-Host "       Correct the path in $Script:ConfigFile (write it with forward slashes, like C:/Program Files/.../brave.exe),"
+        Write-Host '       or set it to "auto" to use Chrome or Edge. Then run Setup again.'
+    } else {
+        Write-Bad "No usable browser found (setting: $browserPref). Microsoft Edge comes with Windows; Google Chrome is at https://www.google.com/chrome"
+        Write-Host "       If you set ""receiverBrowser"" in $Script:ConfigFile, check it is ""auto"", ""chrome"", ""edge"","
+        Write-Host '       or the full path of another Chromium-based browser.'
+    }
     exit 1
 }
 Write-Ok "$($browser.Name) at $($browser.Exe) (uses its own TailMic profile; your normal browser is not touched)"
@@ -235,13 +242,15 @@ Write-Host ''
 Write-Host '=====================================================================' -ForegroundColor Cyan
 if ($problems -eq 0) { Write-Host ' Setup complete.' -ForegroundColor Green } else { Write-Host " Setup finished with $problems problem(s) - see the red lines above." -ForegroundColor Yellow }
 Write-Host ''
-Write-Host ' On your laptop, open this address in Chrome (copied to clipboard):'
+Write-Host ' On your laptop, open this address in Chrome or another Chromium-based browser (copied to clipboard):'
 Write-Host "     $url" -ForegroundColor White
 Write-Host ''
 Write-Host ' In your game, choose the microphone:  Microphone (Steam Streaming Microphone)'
 Write-Host ''
 Write-Host ' Start / stop / check TailMic from anywhere (also over SSH):'
 Write-Host "     `"$Script:Root\TailMic.cmd`" start | stop | status"
+Write-Host ' Update TailMic later (also over SSH):'
+Write-Host "     `"$Script:Root\TailMic.cmd`" update        (or double-click Update-TailMic.cmd)"
 Write-Host ' Change the allowed user (also over SSH, so you can paste the login):'
 Write-Host "     `"$Script:Root\TailMic.cmd`" set-user <Tailscale login>"
 Write-Host '=====================================================================' -ForegroundColor Cyan

@@ -27,6 +27,9 @@ const WEB = path.join(HERE, 'web');
 const MAX_BODY = 64 * 1024;
 const MAX_DISCARD = 1024 * 1024; // after refusing a big body, read at most this much more, then cut the connection
 const ANSWER_TIMEOUT_MS = 15000;
+// A page that only checks on the PC every few seconds may get Tailscale IPs this old,
+// so that such checks do not start tailscale.exe twice a minute for hours on end.
+const POLL_IPS_MAX_AGE_MS = 10 * 60 * 1000;
 const TEST_TIMEOUT_MS = 8000; // how long the PC window gets to start a "what the game hears" test
 
 /**
@@ -64,8 +67,9 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 
 /**
  * Log at most `max` lines per `windowMs` for each key (e.g. a web page that keeps
- * retrying a refused request), then one summary line. Keys are few and fixed
- * (request kind / Tailscale login), so the map stays tiny.
+ * retrying a refused request), then one summary line. Keys are few (request
+ * kind / Tailscale login); should there ever be many, the map is emptied rather
+ * than left to grow.
  */
 export function makeLimitedLog(write = log, max = 5, windowMs = 60000, now = Date.now) {
   const seen = new Map();
@@ -74,6 +78,7 @@ export function makeLimitedLog(write = log, max = 5, windowMs = 60000, now = Dat
     let e = seen.get(key);
     if (!e || t - e.start >= windowMs) {
       if (e && e.suppressed) write(`(${e.suppressed} more "${key}" messages suppressed)`);
+      if (!e && seen.size >= 200) seen.clear();
       e = { start: t, count: 0, suppressed: 0 };
       seen.set(key, e);
     }
@@ -82,21 +87,29 @@ export function makeLimitedLog(write = log, max = 5, windowMs = 60000, now = Dat
 }
 
 /**
- * The PC's own Tailscale IPs, read with `tailscale ip` (cached for 30 s).
+ * The PC's own Tailscale IPs, read with `tailscale ip` (cached for 30 s; a caller
+ * that can live with older ones passes its own `maxAgeMs`).
  * Returns [] if Tailscale is not available; the address-range filter still applies then.
  */
 export function makePcIps(tailscaleExe, ttlMs = 30000) {
   let cache = { at: 0, ips: [] };
-  return () => new Promise((resolve) => {
-    if (!tailscaleExe) return resolve([]);
-    if (Date.now() - cache.at < ttlMs) return resolve(cache.ips);
-    execFile(tailscaleExe, ['ip'], { timeout: 3000, windowsHide: true }, (err, stdout) => {
-      const ips = err ? [] : String(stdout).split(/\s+/).filter((x) => /^[0-9a-f.:]+$/i.test(x));
-      if (err) log('could not read Tailscale IPs:', err.message);
-      cache = { at: ips.length ? Date.now() : 0, ips };
-      resolve(ips);
-    });
-  });
+  let reading = null; // one tailscale.exe at a time, however many requests wait for it
+  return (maxAgeMs = ttlMs) => {
+    if (!tailscaleExe) return Promise.resolve([]);
+    if (Date.now() - cache.at < maxAgeMs) return Promise.resolve(cache.ips);
+    if (!reading) {
+      reading = new Promise((resolve) => {
+        execFile(tailscaleExe, ['ip'], { timeout: 3000, windowsHide: true }, (err, stdout) => {
+          const ips = err ? [] : String(stdout).split(/\s+/).filter((x) => /^[0-9a-f.:]+$/i.test(x));
+          if (err) log('could not read Tailscale IPs:', err.message);
+          cache = { at: ips.length ? Date.now() : 0, ips };
+          reading = null;
+          resolve(ips);
+        });
+      });
+    }
+    return reading;
+  };
 }
 
 const STATIC = {
@@ -258,7 +271,8 @@ export function createTailMic(cfg, { onQuit = () => {} } = {}) {
       return sendJson(res, 200, {
         user,
         allowedCidrs: cfg.allowedCidrs,
-        pcIps: await pcIps(),
+        // "?poll": the page's regular look at the PC, not the start of a call.
+        pcIps: await pcIps(url.searchParams.has('poll') ? POLL_IPS_MAX_AGE_MS : undefined),
         opus: cfg.opus,
         receiverOnline: !!state.receiver,
         receiver: state.receiverStatus,

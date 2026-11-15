@@ -121,7 +121,7 @@ if ((Test-PortOpen $clientPort) -or (Test-PortOpen $receiverPort)) {
     Write-Ok 'TailMic server started.'
 }
 
-# ---- Receiver window (Chrome or Edge, with a TailMic-only profile separate from your normal browser)
+# ---- Receiver window (Chrome, Edge or the browser from the settings, with a TailMic-only profile separate from your normal browser)
 $browser = Get-ReceiverBrowser ([string]$cfg.receiverBrowser)
 if (-not $browser) {
     Write-Bad "No usable browser found (receiverBrowser = '$($cfg.receiverBrowser)'). Run Setup-TailMic.cmd again."
@@ -135,6 +135,15 @@ $browserArgs = @(
     '--no-default-browser-check',
     '--disable-extensions',
     '--disable-sync',
+    # This browser only ever shows TailMic's own page on this PC, so everything a
+    # browser does in the background for normal browsing is switched off: no
+    # downloads of browser components, no update or safety-list checks, no reports.
+    '--disable-background-networking',
+    '--disable-component-update',
+    '--disable-default-apps',
+    '--disable-domain-reliability',
+    '--no-pings',
+    '--disable-features=Translate,MediaRouter,OptimizationHints',
     # No switch that lets every site use the microphone: the profile itself allows
     # TailMic's own page only (see Initialize-ReceiverProfile).
     '--autoplay-policy=no-user-gesture-required',

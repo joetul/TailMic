@@ -92,6 +92,10 @@ const PROBES = () => {
   }
   const Orig = window.RTCPeerConnection;
   window.RTCPeerConnection = class extends Orig { constructor(...a) { super(...a); window.__pcs.push(this); } };
+  window.__ctxs = [];
+  const OrigCtx = window.AudioContext;
+  window.AudioContext = class extends OrigCtx { constructor(...a) { super(...a); window.__ctxs.push(this); } };
+  window.__openCtxs = () => window.__ctxs.filter((x) => x.state !== 'closed').length;
   window.__liveTracks = () => window.__streams.flatMap((x) => x.getTracks()).filter((t) => t.readyState === 'live').length;
   window.__openPcs = () => window.__pcs.filter((x) => x.connectionState !== 'closed' && x.signalingState !== 'closed').length;
 };
@@ -99,6 +103,10 @@ const PROBES = () => {
 // The file Start-TailMic writes into the TailMic-only browser profile on the PC: it
 // allows ONE site (TailMic's own page) to use audio devices without asking.
 const profileSeed = (origin) => fs.readFileSync(path.join(ROOT, 'scripts/receiver-preferences.json'), 'utf8').trim().replace('{ORIGIN}', origin);
+
+// The switches scripts/start.ps1 starts the PC window with (all but the ones about its window).
+const PC_WINDOW_SWITCHES = [...fs.readFileSync(path.join(ROOT, 'scripts/start.ps1'), 'utf8').matchAll(/^\s+'(--[a-z][^']*)',?\s*$/gm)]
+  .map((m) => m[1]).filter((a) => !a.startsWith('--window-size'));
 
 // realProfile: run the PC window the way Start-TailMic does - its own browser
 // profile, prepared for `realProfile(cfg)` (a site), no switch that accepts every
@@ -120,7 +128,7 @@ async function run(name, cfgOverrides, body, { beforeReceiver, realProfile, stea
       fs.writeFileSync(path.join(dir, 'Default', 'Preferences'), profileSeed(realProfile(cfg)));
       rctx = await chromium.launchPersistentContext(dir, {
         channel: 'chromium',
-        args: ['--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required', '--no-first-run'],
+        args: ['--use-fake-device-for-media-stream', ...PC_WINDOW_SWITCHES],
       });
     } else {
       rctx = await browser.newContext({ bypassCSP: true }); // lets the test runner evaluate its probes
@@ -655,6 +663,27 @@ await run('PC profile: without the permission the window says so, status reports
     assert.equal(h.outputDevice, null);
     assert.equal(await receiver.evaluate(() => window.__liveTracks()), 0);
   }, { realProfile: () => 'http://127.0.0.1:9' }); // prepared for some other site: as good as not prepared
+
+await run('resources: 25 calls in a row leave nothing open and no growing lists', { allowedCidrs: LAB_CIDRS, outputDeviceMatch: FAKE_OUTPUT }, async (t) => {
+  const { receiver, client, srv } = t;
+  await ready(t);
+  for (let i = 0; i < 25; i++) {
+    await client.click('#connect');
+    await connected(client);
+    await sleep(200);
+    await client.click('#connect');
+    await waitFor(receiver, () => window.tailmic.status === 'Ready');
+  }
+  const c = await client.evaluate(() => ({ pcs: window.__openPcs(), mics: window.__liveTracks(), audioContexts: window.__openCtxs(), soundLog: window.tailmic.sounds.length, options: document.getElementById('mic').options.length }));
+  const r = await receiver.evaluate(() => ({ pcs: window.__openPcs(), mics: window.__liveTracks(), audioContexts: window.__openCtxs(), playing: !!document.getElementById('audio').srcObject }));
+  console.log('  laptop page:', JSON.stringify(c), '| PC window:', JSON.stringify(r), '| calls:', offers(srv));
+  assert.equal(offers(srv), 25);
+  assert.deepEqual({ pcs: c.pcs, mics: c.mics }, { pcs: 0, mics: 0 }, 'laptop: every connection and microphone was closed');
+  assert.ok(c.audioContexts <= 1, `laptop: only the one for the alert sounds stays (${c.audioContexts})`);
+  assert.ok(c.soundLog <= 20, 'laptop: the sound history is short');
+  assert.ok(c.options <= 4, 'laptop: the microphone list is not appended to');
+  assert.deepEqual(r, { pcs: 0, mics: 0, audioContexts: 0, playing: false }, 'PC: nothing left open');
+});
 
 await run('Tailscale-only policy refuses a non-Tailscale network (this container has no 100.x address)', {
   outputDeviceMatch: FAKE_OUTPUT,
