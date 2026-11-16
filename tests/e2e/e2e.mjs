@@ -1,5 +1,5 @@
 // End-to-end test: real Chromium on both ends (fake mic), real TailMic server.
-// Run inside the Playwright Docker image (see README "For developers").
+// Run inside the Playwright Docker image (see docs/development.md).
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
