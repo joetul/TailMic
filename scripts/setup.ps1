@@ -249,6 +249,7 @@ Write-Host ' In your game, choose the microphone:  Microphone (Steam Streaming M
 Write-Host ''
 Write-Host ' Start / stop / check TailMic from anywhere (also over SSH):'
 Write-Host "     `"$Script:Root\TailMic.cmd`" start | stop | status"
+Write-Host '     (or double-click Start-TailMic.cmd, Stop-TailMic.cmd or Status-TailMic.cmd in the TailMic folder)'
 Write-Host ' Update TailMic later (also over SSH):'
 Write-Host "     `"$Script:Root\TailMic.cmd`" update        (or double-click Update-TailMic.cmd)"
 Write-Host ' Change the allowed user (also over SSH, so you can paste the login):'

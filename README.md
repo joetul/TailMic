@@ -98,7 +98,7 @@ Run **Tone check** once after setup, and whenever people say you sound strange. 
 |---|---|---|
 | Start | `Start-TailMic.cmd` | `TailMic.cmd start` |
 | Stop | `Stop-TailMic.cmd` | `TailMic.cmd stop` |
-| Check that everything is ready | | `TailMic.cmd status` |
+| Check that everything is ready | `Status-TailMic.cmd` | `TailMic.cmd status` |
 | Update to the latest version | `Update-TailMic.cmd` | `TailMic.cmd update` |
 | Change the allowed user | `Setup-TailMic.cmd` | `TailMic.cmd set-user you@example.com` |
 | Start with Windows, on or off | `Autostart-On.cmd`, `Autostart-Off.cmd` | |
@@ -122,7 +122,7 @@ If your TailMic folder has no `Update-TailMic.cmd` (installed before version 1.2
 
 ## Troubleshooting
 
-`TailMic.cmd status` on the PC is the first thing to try: it names what is wrong.
+The status report is the first thing to try: it names what is wrong. Double-click `Status-TailMic.cmd` on the PC, or run `TailMic.cmd status`.
 
 | You see | What to do |
 |---|---|

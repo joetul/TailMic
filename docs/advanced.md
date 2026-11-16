@@ -68,7 +68,7 @@ ssh you@gaming-pc ".\TailMic\TailMic.cmd update"
 `start` waits until TailMic is ready, then prints something like:
 
 ```
-   OK  TailMic server: running (version 1.2.1)
+   OK  TailMic server: running (version 1.2.2)
    OK  PC window: open
    OK  Output: Speakers (Steam Streaming Microphone)
    OK  Steam Streaming Microphone format: 2 channel, 32 bit, 48000 Hz (both halves match)
@@ -90,9 +90,9 @@ Your settings (allowed user, ports) are stored in `%LOCALAPPDATA%\TailMic`, not 
 - If `status` shows a problem after an update, run `Setup-TailMic.cmd` again at the PC's desktop and press **Enter** at every question.
 - If you installed TailMic with `git clone`, use `git pull` instead, then `TailMic.cmd stop` and `TailMic.cmd start`.
 
-**Check that the PC really runs the new version:** run `TailMic.cmd status`.
+**Check that the PC really runs the new version:** double-click `Status-TailMic.cmd`, or run `TailMic.cmd status`.
 
-- The first line shows the version that is running, for example `TailMic server: running (version 1.2.1)`. The newest version number is in [`app/package.json`](https://github.com/joetul/TailMic/blob/main/app/package.json) on GitHub.
+- The first line shows the version that is running, for example `TailMic server: running (version 1.2.2)`. The newest version number is in [`app/package.json`](https://github.com/joetul/TailMic/blob/main/app/package.json) on GitHub.
 - If it says **"running, but NOT the files in this folder"**, the files were replaced but an older TailMic is still running, or TailMic runs from another folder. Run `TailMic.cmd stop` and then `TailMic.cmd start`. `status` compares the running program with the files on disk, so it notices this even when the version number didn't change.
 
 **No `Update-TailMic.cmd` in your TailMic folder?** You installed before version 1.2. Do this once: on the PC, open PowerShell and paste the block below, or connect with `ssh you@gaming-pc` and paste it there. (If the SSH prompt starts with `C:\...>` without `PS` in front, type `powershell` first.) If TailMic is in another folder, change the first line to it, for example `$dir = "C:\TailMic"`.

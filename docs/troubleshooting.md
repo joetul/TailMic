@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with `TailMic.cmd status` on the PC (also over SSH): it names what is wrong. Logs are in `%LOCALAPPDATA%\TailMic\logs` on the PC.
+Start with the status report: it names what is wrong. Double-click `Status-TailMic.cmd` on the PC, or run `TailMic.cmd status` (also over SSH). Logs are in `%LOCALAPPDATA%\TailMic\logs` on the PC.
 
 For how to install and use TailMic, see the [README](../README.md).
 
