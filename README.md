@@ -153,3 +153,7 @@ TailMic trusts the PC itself, your Tailscale account and this repository, which 
 - [Troubleshooting](docs/troubleshooting.md): the full list
 - [Security and privacy](docs/security.md): how it stays secure, what is stored, what it costs on the PC
 - [For developers](docs/development.md): how the code is laid out, and the tests
+
+## License
+
+[MIT](LICENSE): free to use, change and share, with no warranty.
