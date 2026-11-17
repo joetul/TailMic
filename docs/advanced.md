@@ -43,7 +43,7 @@ Nothing is needed in the other direction (PC → client). **Test what the game h
 
 - **Allowed user:** the Tailscale login of the client's user. Setup suggests it; press **Enter** to accept. If the PC is a tagged device, setup suggests the users of the other devices on your tailnet instead. If it finds none, or the login is hard to type through Moonlight, press **Enter** to skip and set it afterwards from the client with `TailMic.cmd set-user`.
 - **Node.js:** if it's missing, press **Enter** to install it. Windows may ask for permission, which is why setup runs at the PC's desktop and not over SSH.
-- **Steam Streaming Microphone:** setup checks that the device exists and that its two halves use the same audio format. A freshly installed device often doesn't; setup then shows an error with the exact format to pick. See [Troubleshooting](troubleshooting.md).
+- **Steam Streaming Microphone:** setup checks that the device exists and that its two halves use the same audio format. If the device is missing, setup shows the steps to install it. A freshly installed device often has the wrong format; setup then shows an error with the exact format to pick. Both are described under [Steam's microphone device](../README.md#steams-microphone-device) in the README.
 - **Tailscale Serve:** the first time, Tailscale may print a link. Open it, click **Enable**, and go back to the setup window.
 - **The TailMic window:** a small "TailMic (PC)" window opens minimized. You never need to touch it, and there is no permission prompt to click.
 - **A scheduled task** called **TailMic** is created, so that TailMic can be started over SSH.
@@ -68,7 +68,7 @@ ssh you@gaming-pc ".\TailMic\TailMic.cmd update"
 `start` waits until TailMic is ready, then prints something like:
 
 ```
-   OK  TailMic server: running (version 1.2.2)
+   OK  TailMic server: running (version 1.2.3)
    OK  PC window: open
    OK  Output: Speakers (Steam Streaming Microphone)
    OK  Steam Streaming Microphone format: 2 channel, 32 bit, 48000 Hz (both halves match)
@@ -92,7 +92,7 @@ Your settings (allowed user, ports) are stored in `%LOCALAPPDATA%\TailMic`, not 
 
 **Check that the PC really runs the new version:** double-click `Status-TailMic.cmd`, or run `TailMic.cmd status`.
 
-- The first line shows the version that is running, for example `TailMic server: running (version 1.2.2)`. The newest version number is in [`app/package.json`](https://github.com/joetul/TailMic/blob/main/app/package.json) on GitHub.
+- The first line shows the version that is running, for example `TailMic server: running (version 1.2.3)`. The newest version number is in [`app/package.json`](https://github.com/joetul/TailMic/blob/main/app/package.json) on GitHub.
 - If it says **"running, but NOT the files in this folder"**, the files were replaced but an older TailMic is still running, or TailMic runs from another folder. Run `TailMic.cmd stop` and then `TailMic.cmd start`. `status` compares the running program with the files on disk, so it notices this even when the version number didn't change.
 
 **No `Update-TailMic.cmd` in your TailMic folder?** You installed before version 1.2. Do this once: on the PC, open PowerShell and paste the block below, or connect with `ssh you@gaming-pc` and paste it there. (If the SSH prompt starts with `C:\...>` without `PS` in front, type `powershell` first.) If TailMic is in another folder, change the first line to it, for example `$dir = "C:\TailMic"`.

@@ -12,6 +12,7 @@ Before you start:
 
 - **Tailscale** is connected on both computers, and **MagicDNS** and **HTTPS** are enabled at <https://login.tailscale.com/admin/dns>.
 - **Steam** is running on the PC.
+- The PC has **Steam's microphone device**. Steam does not install it by itself, so many PCs don't have it yet: see [Steam's microphone device](#steams-microphone-device).
 
 **1. Download.** On the PC, open PowerShell (Start menu → type `powershell` → Enter) and paste this:
 
@@ -37,6 +38,28 @@ TailMic is now in the folder `TailMic` inside your user folder (`C:\Users\you\Ta
 Run it at the PC's desktop (through Moonlight is fine), not over SSH. It is safe to run again at any time.
 
 **3. Open the address.** Setup ends by showing the client address, something like `https://gaming-pc.tail1234.ts.net:8443`. Open it on the client in Chrome, or another Chromium-based browser, and bookmark it.
+
+## Steam's microphone device
+
+TailMic does not create a microphone of its own. It uses a virtual one that comes with Steam, and Steam installs it only the first time someone streams from the PC with **Steam Remote Play**. A PC that has only been used with Moonlight and Sunshine usually doesn't have it yet.
+
+**Check.** On the PC, open **Settings → System → Sound**. You need both of these:
+
+- under **Output**: *Speakers (Steam Streaming Microphone)*
+- under **Input**: *Microphone (Steam Streaming Microphone)*
+
+*Speakers (Steam Streaming Speakers)* is a different device (Sunshine can add it) and doesn't count. Setup and `Status-TailMic.cmd` check this too.
+
+**If it is missing, do this once:**
+
+1. On the PC, open **Steam → Settings → Remote Play** and turn on **Enable Remote Play**.
+2. Install the free **Steam Link** app on the client (a phone or tablet works too) and pick the PC in it. Steam Link shows a PIN: type it into Steam on the PC. If Steam Link doesn't find the PC, choose **Other Computer** and follow what it says.
+3. In Steam Link, click **Start Playing** and wait until you see the PC's screen. If Steam asks to install audio drivers on the PC, say yes.
+4. Close Steam Link. You don't need it again; keep using Moonlight.
+5. Check the sound settings again. If the device is still missing, restart the PC.
+6. Run `Setup-TailMic.cmd` again.
+
+**Then fix the format, also once.** A freshly installed device usually has its two halves set to different audio formats, and that makes your voice slow, deep or garbled in the game. Setup and `Status-TailMic.cmd` report it as an error and print the exact format to pick. On the PC, open **Settings → System → Sound → More sound settings → Recording** tab → *Microphone (Steam Streaming Microphone)* → **Properties → Advanced**, and set **Default Format** to exactly that. Channels, bits and Hz must all match. Then restart TailMic and the game.
 
 ## Use
 
@@ -74,7 +97,7 @@ browser page ── audio over Tailscale ──▶ TailMic window ──▶ Spea
 | On the PC (Windows 11) | On the client (Mac, Windows, Linux or Chromebook) |
 |---|---|
 | Tailscale | Tailscale, signed in as the user you allow in setup |
-| Steam, running | A microphone or headset |
+| Steam, running, with [its microphone device](#steams-microphone-device) | A microphone or headset |
 | Chrome or Edge (Edge comes with Windows) | Chrome, or another Chromium-based browser (Edge, Brave, ...) |
 | Node.js; setup installs it for you | Nothing else |
 
@@ -127,8 +150,8 @@ The status report is the first thing to try: it names what is wrong. Double-clic
 | You see | What to do |
 |---|---|
 | Client: **"TailMic is not running on the PC"** | Start it: `Start-TailMic.cmd` on the PC, or `TailMic.cmd start`. |
-| **"Steam Streaming Microphone not found"** | Start Steam on the PC. If the device is still missing, it was never installed: on the PC, turn on **Steam → Settings → Remote Play → Enable Remote Play**. Install the free **Steam Link** app on the client, connect to the PC once (enter the PIN it shows), and close Steam Link again. Then run `Setup-TailMic.cmd` again. *Speakers (Steam Streaming Speakers)* is a different device and doesn't count. |
-| Your voice is **slow, deep or garbled** in the game | The two halves of Steam's device use different audio formats; a freshly installed device often does. `TailMic.cmd status` prints the exact format to pick. On the PC, open **Settings → System → Sound → More sound settings → Recording** tab → *Microphone (Steam Streaming Microphone)* → **Properties → Advanced**, and set **Default Format** to exactly that. Channels, bits and Hz must all match. Then restart TailMic and the game. |
+| **"Steam Streaming Microphone not found"** | Start Steam on the PC. If the device is still missing, it was never installed: follow [Steam's microphone device](#steams-microphone-device). |
+| Your voice is **slow, deep or garbled** in the game | The two halves of Steam's device use different audio formats. Fix the format as described under [Steam's microphone device](#steams-microphone-device). **Tone check** on the client page tells you whether it worked. |
 | Connected, but the game hears nothing | Choose **Microphone (Steam Streaming Microphone)** in the game, and restart the game after starting TailMic. |
 | The page won't open | Check that both computers are connected in Tailscale and that MagicDNS and HTTPS are enabled. Then run Setup again on the PC. |
 | **"Tailscale user ... is not allowed"**, or `status` says **"Allowed user: NONE"** | Allow the user that is signed in on the client: `TailMic.cmd set-user <that login>` on the PC. |
@@ -145,13 +168,13 @@ The full list is in [Troubleshooting](docs/troubleshooting.md). Logs are in `%LO
 - **Nothing is stored or sent elsewhere.** No audio is saved, there is no analytics, and the pages load nothing from the internet.
 - **The PC listens only during a test**, and only to Steam's microphone.
 
-TailMic trusts the PC itself, your Tailscale account and this repository, which is what you download and run. The details are in [Security and privacy](docs/security.md).
+TailMic trusts the PC itself, your Tailscale account and this repository, which is what you download and run. The details are in [Security and privacy](docs/security-and-privacy.md).
 
 ## More
 
 - [Setup details and options](docs/advanced.md): browsers, tagged devices and access controls, ports, SSH, uninstall
 - [Troubleshooting](docs/troubleshooting.md): the full list
-- [Security and privacy](docs/security.md): how it stays secure, what is stored, what it costs on the PC
+- [Security and privacy](docs/security-and-privacy.md): how it stays secure, what is stored, what it costs on the PC
 - [For developers](docs/development.md): how the code is laid out, and the tests
 
 ## License

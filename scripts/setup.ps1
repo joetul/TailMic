@@ -173,12 +173,16 @@ if ($eps.Count -gt 0) {
     Write-Bad 'Steam Streaming Microphone is not available yet.'
     if (-not $steamRunning) { Write-Host '       Steam is not running. Start Steam first.' }
     Write-Host '       ("Speakers (Steam Streaming Speakers)" is a different device and does not count.)'
-    Write-Host '       Fix: Steam installs the device the first time you use Steam Remote Play:'
+    Write-Host '       Fix: Steam installs the device only the first time someone streams from this PC'
+    Write-Host '       with Steam Remote Play. Do this once:'
     Write-Host '         1. On this PC: Steam -> Settings -> Remote Play -> turn on "Enable Remote Play".'
-    Write-Host '         2. On the client (the computer you talk into): install the free Steam Link app and connect to this PC once'
-    Write-Host '            (type the PIN it shows here on the PC).'
-    Write-Host '         3. Close Steam Link right away. Then run Setup again; it also checks the audio format.'
-    Write-Host '       See README -> Troubleshooting.'
+    Write-Host '         2. On the client (the computer you talk into), or on a phone: install the free Steam Link app'
+    Write-Host '            and pick this PC in it. Steam Link shows a PIN: type it into Steam here on the PC.'
+    Write-Host '         3. In Steam Link, click "Start Playing" and wait until you see the screen of this PC.'
+    Write-Host '            If Steam asks to install audio drivers on this PC, say yes.'
+    Write-Host '         4. Close Steam Link; you do not need it again.'
+    Write-Host '         5. Run Setup again; it also checks the audio format. If the device is still missing, restart this PC first.'
+    Write-Host '       More in the README, in the part about the Steam microphone device.'
 }
 
 # ---------------------------------------------------------------- 5. Config + Tailscale Serve
